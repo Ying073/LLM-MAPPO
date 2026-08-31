@@ -1,0 +1,61 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ===== 虚拟环境 =====
+.venv/
+venv/
+env/
+ENV/
+
+# ===== 密钥 / 配置（切勿提交）=====
+.env
+.env.*
+!.env.example
+*.key
+secrets.yaml
+
+# ===== PyTorch / 模型权重 =====
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.bin
+checkpoints/
+runs/
+wandb/
+
+# ===== 实验产物（可再生成，不提交）=====
+logs/
+results/
+outputs/
+figures/
+*.log
+*.tfevent
+*.events.out.tfevents.*
+
+# ===== 测试 / 缓存 =====
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+
+# ===== 本地 Claude Code 配置（可能含本地密钥）=====
+.claude/
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db
