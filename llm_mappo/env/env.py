@@ -56,6 +56,7 @@ class SearchEnv:
         self.local_prob = np.full((self.cfg.n_uav, I), 0.5)
         self.local_unc = np.full((self.cfg.n_uav, I), 1.0)
         self.last_visit = np.full((self.cfg.n_uav, I), -self.cfg.max_steps)
+        self.pheromone = np.zeros(I)
         self._update_target_presence()
         return self._obs(), {}
 
@@ -103,6 +104,25 @@ class SearchEnv:
             self.local_prob[n, idx] = _bayes_vec(self.local_prob[n, idx], detected, p_d, p_f)
             self.local_unc[n, idx] = _entropy_vec(self.local_prob[n, idx])
 
+    # ---------- 信息素 ----------
+    def _update_pheromone(self):
+        """Eq.(13)-(17) 向量化：按全局融合概率分类网格并更新信息素场。"""
+        gs = self.cfg.grid_size
+        I = gs * gs
+        _, p = fuse_global(self.local_unc, self.local_prob)
+        t = self._step
+        last = self.last_visit.max(axis=0)
+        dp = self.pheromone
+        evap = self.dpes.evaporation
+        new = dp.copy()
+        cs = p >= self.dpes.p_hv_high
+        hv = (p >= self.dpes.p_hv_low) & ~cs
+        lu = (p < self.dpes.p_hv_low) & (t - last > self.dpes.revisit_threshold)
+        new[hv] = evap * dp[hv] + self.dpes.release_hv        # Eq.(14)
+        new[lu] = self.dpes.release_lu                        # Eq.(16)
+        new[cs] = evap * dp[cs]                               # Eq.(17)
+        self.pheromone = new
+
     # ---------- 能耗 ----------
     def _update_energy(self):
         for n in range(self.cfg.n_uav):
@@ -124,6 +144,7 @@ class SearchEnv:
                 self.uav_pos[n, 2] = max(0, self.uav_pos[n, 2] - 1)
         self._update_target_presence()
         self._sensor_scan()
+        self._update_pheromone()
         self._update_energy()
         self._step += 1
         term = self._step >= self.cfg.max_steps
@@ -132,7 +153,7 @@ class SearchEnv:
 
     # ---------- 观测 / 指标 ----------
     def _obs(self):
-        return [np.concatenate([self.local_prob[n], self.local_unc[n]])
+        return [np.concatenate([self.local_prob[n], self.local_unc[n], self.pheromone])
                 for n in range(self.cfg.n_uav)]
 
     def _searched_targets(self) -> float:
