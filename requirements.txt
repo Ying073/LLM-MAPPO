@@ -1,0 +1,7 @@
+torch>=2.0
+numpy
+gymnasium
+matplotlib
+openai>=1.0
+python-dotenv
+pytest
