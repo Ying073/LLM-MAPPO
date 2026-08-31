@@ -9,10 +9,10 @@ dist/
 .eggs/
 
 # ===== 虚拟环境 =====
-.venv/
-venv/
-env/
-ENV/
+/.venv/
+/venv/
+/env/
+/ENV/
 
 # ===== 密钥 / 配置（切勿提交）=====
 .env
