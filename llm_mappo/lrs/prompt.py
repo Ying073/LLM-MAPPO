@@ -20,12 +20,12 @@ REASONING_GUIDANCE = """\
 (5) 碰撞与越界应惩罚。避免只依赖稀疏的"找到目标"奖励。"""
 
 
-def build_initial_prompt(n_uav, grid_size, n_targets) -> str:
-    return "\n\n".join([
-        TASK_DESCRIPTION.format(n_uav=n_uav, grid_size=grid_size, n_targets=n_targets),
-        REASONING_GUIDANCE,
-        OUTPUT_INTERFACE,
-    ])
+def build_initial_prompt(n_uav, grid_size, n_targets, include_reasoning=True) -> str:
+    parts = [TASK_DESCRIPTION.format(n_uav=n_uav, grid_size=grid_size, n_targets=n_targets)]
+    if include_reasoning:
+        parts.append(REASONING_GUIDANCE)
+    parts.append(OUTPUT_INTERFACE)
+    return "\n\n".join(parts)
 
 
 def build_feedback_prompt(base_prompt, best_code, best_score, worst_codes) -> str:

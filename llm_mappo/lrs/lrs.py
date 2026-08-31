@@ -14,17 +14,19 @@ def extract_code(text: str) -> str:
 class LRS:
     """离线 LLM 奖励塑形：初始化 + K 轮迭代反馈（Eq.22）。"""
 
-    def __init__(self, cfg: Config, env):
+    def __init__(self, cfg: Config, env, include_reasoning: bool = True):
         self.cfg = cfg
         self.env = env
         self.client = DeepSeekClient(cfg.lrs.model)
         self.base = build_initial_prompt(
-            cfg.env.n_uav, cfg.env.grid_size, cfg.env.n_targets)
+            cfg.env.n_uav, cfg.env.grid_size, cfg.env.n_targets,
+            include_reasoning=include_reasoning)
         self.buffer = []          # (code, score)
 
-    def run(self) -> str:
+    def run(self, iterations: int | None = None) -> str:
+        iterations = iterations or self.cfg.lrs.n_iterations
         best_code, best_score = None, -1e18
-        for k in range(self.cfg.lrs.n_iterations):
+        for k in range(iterations):
             prompt = self.base if k == 0 else build_feedback_prompt(
                 self.base, best_code, best_score, self.buffer[-2:])
             for attempt in range(self.cfg.lrs.max_retries):
