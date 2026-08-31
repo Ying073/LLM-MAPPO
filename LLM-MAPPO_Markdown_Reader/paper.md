@@ -1,0 +1,895 @@
+# 多无人机动态目标搜索轨迹规划：LLM 增强的多智能体强化学习算法
+
+**Original title:** Multi-UAV Trajectory Planning for Dynamic Target Search: An LLM-Enhanced Multi-Agent Reinforcement Learning Algorithm  
+**Authors:** Yifei Liu, Xiaoshuai Li, Xiaoping Jiang, Hui Liu, Junan Yang  
+**Venue:** IEEE Transactions on Cognitive Communications and Networking, 2026  
+**DOI:** 10.1109/TCCN.2026.3710519
+
+**公式索引：** [公式 (1)–(29) 原式核对与中文说明](equations.md)
+
+## 术语表
+
+| Canonical term | 统一译法 | 说明 |
+|---|---|---|
+| Unmanned Aerial Vehicle (UAV) | 无人机（UAV） | 首次展开，后文保留 UAV |
+| Multi-Agent Reinforcement Learning (MARL) | 多智能体强化学习（MARL） | 首次展开，后文保留 MARL |
+| LLM-guided Multi-Agent Proximal Policy Optimization (LLM-MAPPO) | LLM 引导的多智能体近端策略优化（LLM-MAPPO） | 算法名称固定 |
+| reward shaping | 奖励塑形 | 不译为“奖励整形” |
+| sparse reward | 稀疏奖励 | 统一译法 |
+| pheromone | 信息素 | 统一译法 |
+| area uncertainty | 区域不确定度 | 指搜索区域的平均感知不确定性 |
+
+<a id="S001"></a>
+## 摘要 / Abstract
+
+**Source:** p.1 S001
+
+**Original:** Deploying Unmanned Aerial Vehicles (UAVs) for dynamic target search in disaster response scenarios can reduce losses. This paper investigates multi-UAV cooperative trajectory planning for dynamic target search in a three-dimensional environment with static obstacles, aiming to maximize the number of searched targets and minimize the average uncertainty of the search area, while ensuring collision avoidance between UAVs and obstacles. Existing Multi-Agent Reinforcement Learning (MARL) based methods face the sparse reward problem in dynamic target search, which hinders planning feasible multi-UAV trajectories. Notably, Large Language Models (LLMs), with extensive pretrained knowledge and powerful semantic reasoning capabilities, exhibit potential for designing high-quality reward functions to alleviate the sparse reward problem. Therefore, we propose an LLM-guided Multi-Agent Proximal Policy Optimization (LLM-MAPPO) algorithm, which leverages LLMs’ reasoning capabilities to guide MARL policy learning and plans multi-UAV trajectories for efficient dynamic target search. Specifically, we design an offline LLM reward shaping scheme that generates dense reward signals to mitigate the sparse reward problem. Moreover, we propose a dual-mode pheromone-based search mechanism to guide UAVs to respond promptly to changes in target positions. Experimental results demonstrate that LLM-MAPPO significantly outperforms compared algorithms in terms of the number of searched targets and average area uncertainty, while successfully avoiding collisions. In particular, LLM-MAPPO reduces the target search time by 71.4%.
+
+**中文:** 在灾害响应场景中部署无人机（UAV）搜索动态目标，有助于降低灾害损失。本文研究含静态障碍物的三维环境下，多无人机协同执行动态目标搜索时的轨迹规划问题：在保证无人机彼此之间以及无人机与障碍物之间不发生碰撞的同时，最大化已搜索目标数量，并最小化搜索区域的平均不确定度。现有基于多智能体强化学习（MARL）的方法在动态目标搜索中面临稀疏奖励问题，因而难以规划出可行的多无人机轨迹。值得注意的是，大语言模型（LLM）拥有广泛的预训练知识和强大的语义推理能力，具有设计高质量奖励函数、缓解稀疏奖励问题的潜力。为此，本文提出 LLM 引导的多智能体近端策略优化（LLM-MAPPO）算法，利用 LLM 的推理能力指导 MARL 策略学习，为高效动态目标搜索规划多无人机轨迹。具体而言，本文设计了一种离线 LLM 奖励塑形方案，通过生成稠密奖励信号缓解稀疏奖励问题；同时提出基于双模式信息素的搜索机制，引导 UAV 对目标位置变化作出及时响应。实验结果表明，在成功避免碰撞的前提下，LLM-MAPPO 在已搜索目标数量和区域平均不确定度方面均显著优于对比算法。尤其是，LLM-MAPPO 将目标搜索时间缩短了 71.4%。
+
+<a id="S002"></a>
+**Source:** p.1 S002
+
+**Original:** Index Terms—Multi-UAV trajectory planning, target search, large language model, multi-agent reinforcement learning.
+
+**中文:** 关键词——多无人机轨迹规划；目标搜索；大语言模型；多智能体强化学习。
+
+<a id="S003"></a>
+## I. 引言 / Introduction
+
+**Source:** p.1 S003
+
+**Original:** The rapid search for dynamic targets is crucial for saving lives and reducing disaster losses in scenarios such as post-disaster search and rescue [1], [2]. Endowed with high maneuverability and distributed sensing capabilities, Unmanned Aerial Vehicles (UAVs) can expand area coverage and shorten mission completion time, thereby improving target search efficiency [3]. However, multi-UAV target search faces the challenge of dynamic uncertainty. On the one hand, dynamic targets render environmental states time-varying. On the other hand, UAVs’ perceptual information is compromised by inherent uncertainty arising from detection errors of their onboard sensors. Therefore, multi-UAV trajectory planning for efficient dynamic target search is critical to facilitating real-time responses to environmental changes and rapidly reducing perceptual uncertainty [4], [5].
+
+**中文:** 在灾后搜救等场景中，快速搜索动态目标对于挽救生命、降低灾害损失至关重要 [1], [2]。凭借高机动性和分布式感知能力，无人机能够扩大区域覆盖范围、缩短任务完成时间，从而提高目标搜索效率 [3]。然而，多无人机目标搜索面临动态不确定性的挑战：一方面，动态目标使环境状态随时间变化；另一方面，机载传感器的检测误差会引入固有不确定性，从而削弱 UAV 获得的感知信息。因此，为高效动态目标搜索规划多无人机轨迹，是实现对环境变化的实时响应并迅速降低感知不确定性的关键 [4], [5]。
+
+<a id="S004"></a>
+### A. 研究动机 / Motivation
+
+**Source:** p.1 S004
+
+**Original:** Existing studies on multi-UAV target search have predominantly focused on static scenarios with stationary targets [6]–[8]. These studies do not take into account target position changes, rendering them inapplicable to dynamic scenarios. A limited number of studies employed the repetitive area coverage strategy for dynamic target search [9]. However, the strategy lacks guidance and struggles to respond promptly to changes in target positions, thereby limiting search efficiency. Accordingly, it is imperative to develop a guided search strategy for dynamic targets to improve multi-UAV target search efficiency.
+
+**中文:** 现有多无人机目标搜索研究主要聚焦目标静止的静态场景 [6]–[8]。这些研究没有考虑目标位置变化，因而无法直接用于动态场景。少数研究采用重复区域覆盖策略搜索动态目标 [9]，但这种策略缺少有效引导，难以及时响应目标位置的变化，搜索效率因而受到限制。因此，有必要为动态目标设计一种带有明确引导的搜索策略，以提高多无人机目标搜索效率。
+
+<a id="S005"></a>
+**Source:** p.1 S005
+
+**Original:** Numerous studies have leveraged the autonomous learning and decision-making capabilities of Multi-Agent Reinforcement Learning (MARL) to enable UAVs to plan trajectories based on real-time perceptual information [10], [11]. Notably, the performance of MARL-based methods is highly dependent on the design of reward functions [12]. Some studies directly adopted original optimization objectives as reward functions [4], [13]. Nevertheless, UAVs often cannot receive effective reward signals until a target is successfully searched, thereby leading to the sparse reward problem. This problem hinders the learning of effective trajectory planning strategies. To mitigate the sparse reward problem, several studies employed manual reward shaping to design dense rewards [14], [15]. However, these methods are highly reliant on human expertise and struggle to address the high complexity of practical dynamic target search missions.
+
+**中文:** 大量研究利用多智能体强化学习（MARL）的自主学习与决策能力，使 UAV 能够依据实时感知信息规划轨迹 [10], [11]。值得注意的是，MARL 方法的性能高度依赖奖励函数的设计 [12]。部分研究直接将原始优化目标作为奖励函数 [4], [13]；然而，UAV 往往要到成功搜索到目标后才能获得有效奖励信号，由此产生稀疏奖励问题，并妨碍有效轨迹规划策略的学习。为缓解这一问题，一些研究通过人工奖励塑形来设计稠密奖励 [14], [15]。但是，这类方法高度依赖人的专业经验，难以应对现实动态目标搜索任务的高度复杂性。
+
+<a id="S006"></a>
+**Source:** p.1 S006
+
+**Original:** Large Language Models (LLMs), with their extensive pretrained knowledge, exhibit exceptional capabilities in semantic understanding and logical reasoning. This renders LLMs promising for generating high-quality reward functions, which provide dense rewards for dynamic target search missions to mitigate the sparse reward problem [16]. However, the inherent hallucination risks of LLMs may cause misalignment between LLM-generated reward functions and actual mission objectives, leading UAVs to learn suboptimal or even infeasible strategies [17]. Therefore, improving the alignment between LLM-generated reward functions and mission optimization objectives is pivotal to enhancing the efficiency of multi-UAV dynamic target search.
+
+**中文:** 大语言模型凭借丰富的预训练知识，在语义理解和逻辑推理方面展现出卓越能力。因此，LLM 有望生成高质量奖励函数，为动态目标搜索任务提供稠密奖励，从而缓解稀疏奖励问题 [16]。不过，LLM 固有的幻觉风险可能使其生成的奖励函数偏离实际任务目标，进而导致 UAV 学到次优甚至不可行的策略 [17]。因此，提高 LLM 生成奖励函数与任务优化目标之间的一致性，是提升多无人机动态目标搜索效率的关键。
+
+<a id="S007"></a>
+### B. 主要贡献 / Contribution
+
+**Source:** p.2 S007
+
+**Original:** The aforementioned challenges motivate us to establish a unified optimization framework for multi-UAV dynamic target search. We aim to optimize multi-UAV cooperative trajectories, maximizing the number of searched targets and minimizing the average uncertainty of the search area, while satisfying UAV collision avoidance constraints. Specifically, we employ the LLM in an offline reward shaping process to generate a high-quality reward function for MARL, thereby mitigating the sparse reward problem. Meanwhile, to address the spatiotemporal dynamics of targets, we develop a dual-mode pheromone mechanism to guide UAVs toward efficient search behaviors in dynamically uncertain environments. Based on these two components, we construct the LLM-guided Multi-Agent Proximal Policy Optimization (LLM-MAPPO) framework, in which the LLM-generated reward function guides MAPPO policy learning, while the dual-mode pheromone mechanism supports efficient target search during policy learning and execution.
+
+**中文:** 针对上述挑战，本文建立了一个统一的多无人机动态目标搜索优化框架。在满足 UAV 避碰约束的前提下，该框架优化多无人机协同轨迹，以最大化已搜索目标数量并最小化搜索区域的平均不确定度。具体而言，本文在离线奖励塑形过程中使用 LLM 为 MARL 生成高质量奖励函数，从而缓解稀疏奖励问题；同时，为应对目标在时间和空间上的动态变化，本文设计双模式信息素机制，引导 UAV 在动态不确定环境中形成高效搜索行为。在这两个组成部分的基础上，本文构建 LLM-MAPPO 框架：由 LLM 生成的奖励函数指导 MAPPO 策略学习，而双模式信息素机制则在策略学习和执行阶段支持高效目标搜索。
+
+<a id="S008"></a>
+**Source:** p.2 S008
+
+**Original:** We propose an LLM-MAPPO algorithm to solve the problem of multi-UAV dynamic target search. LLM-MAPPO fuses the semantic reasoning capability of the LLM with the online decision-making capability of MAPPO, enabling UAVs to conduct cooperative trajectory planning.
+
+**中文:** 本文提出 LLM-MAPPO 算法来解决多无人机动态目标搜索问题。该算法将 LLM 的语义推理能力与 MAPPO 的在线决策能力相结合，使 UAV 能够开展协同轨迹规划。
+
+<a id="S009"></a>
+**Source:** p.2 S009
+
+**Original:** We design an LLM reward shaping scheme, which comprises an initialization phase and an iterative optimization phase to optimize the reward function in an offline manner. This scheme mitigates the LLM’s hallucination risk, ensuring the generation of a high-quality reward function, thereby enhancing the performance of the dynamic target search policy.
+
+**中文:** 本文设计了一种包含初始化阶段和迭代优化阶段的 LLM 奖励塑形方案，以离线方式优化奖励函数。该方案降低了 LLM 的幻觉风险，保障高质量奖励函数的生成，从而提升动态目标搜索策略的性能。
+
+<a id="S010"></a>
+**Source:** p.2 S010
+
+**Original:** We develop a dual-mode pheromone-based efficient search mechanism, in which dual-mode pheromones quantify the spatiotemporal probability distribution of targets and the timeliness of UAVs’ perceptual information. This mechanism guides UAVs to prioritize searching areas with high target presence probabilities and areas that have remained unvisited for a long time, thereby achieving rapid response to changes in target positions.
+
+**中文:** 本文开发了一种基于双模式信息素的高效搜索机制。双模式信息素分别量化目标的时空概率分布以及 UAV 感知信息的时效性，从而引导 UAV 优先搜索目标存在概率较高的区域和长时间未被访问的区域，实现对目标位置变化的快速响应。
+
+<a id="S011"></a>
+**Source:** p.2 S011
+
+**Original:** Extensive experimental results demonstrate that the proposed LLM-MAPPO achieves exceptional performance in the number of searched targets and the reduction of average area uncertainty, while ensuring collision avoidance for UAVs and exhibiting excellent scalability. Notably, the target search time is reduced by 71.4% compared with baseline algorithms.
+
+**中文:** 大量实验结果表明，所提出的 LLM-MAPPO 在保证 UAV 避碰的同时，在已搜索目标数量和区域平均不确定度降低幅度方面表现优异，并具有良好的可扩展性。与基线算法相比，其目标搜索时间缩短了 71.4%。
+
+<a id="S012"></a>
+**Source:** p.2 S012
+
+**Original:** The remainder of the paper is organized as follows. The related work is presented in Section II. Section III presents the system model and the problem formulation. Section IV introduces the proposed LLM-MAPPO algorithm. Next, Section V presents the experimental results and discussions. Finally, Section VI concludes the paper.
+
+**中文:** 本文其余部分安排如下：第二节回顾相关工作；第三节给出系统模型和问题表述；第四节介绍所提出的 LLM-MAPPO 算法；第五节给出实验结果与讨论；第六节总结全文。
+
+<a id="S013"></a>
+## II. 相关工作 / Related Work
+
+### A. 多无人机目标搜索
+
+**Source:** p.2 S013
+
+**Original:** Most multi-UAV target search studies focus on static target scenarios, aiming to search for targets by covering the entire area and acquiring environmental information. In [6], the authors proposed an online temporal strategy optimization method for coverage trajectory planning, improving the probability of target search. In [7], a distributed search method based on ant colony optimization was developed, enabling UAVs to perform searches under unstable communication conditions. The authors of [8] constructed a search framework based on a multilayer aerial computing network, which enhanced search efficiency through collaboration between high-altitude and low-altitude UAVs. However, these methods neglect the position changes of dynamic targets, thus failing to meet the requirements for persistent detection in scenarios where targets reappear in previously searched areas. For dynamic targets, the approach proposed in [9] achieved continuous detection by repeatedly searching areas. Nevertheless, this repeated search approach lacks a guiding strategy, resulting in low search efficiency. In [18], the authors designed a revisit strategy based on digital pheromones, driving UAVs to periodically visit areas that have not been searched for a long time. However, this strategy does not prioritize areas with high target presence probabilities, causing delayed search responses and thus degrading the search performance for dynamic targets. To address this issue, we propose a dual-mode pheromone-based efficient search mechanism. The proposed mechanism guides UAVs to prioritize areas with high target presence probabilities and areas that have remained unvisited for a long time while avoiding repeated searches in recently explored areas, thereby achieving efficient dynamic target search.
+
+**中文:** 多数多无人机目标搜索研究面向静态目标场景，通过覆盖整个区域并获取环境信息来寻找目标。文献 [6] 提出用于覆盖轨迹规划的在线时序策略优化方法，提高了目标被搜索到的概率；文献 [7] 开发基于蚁群优化的分布式搜索方法，使 UAV 能够在通信不稳定的条件下执行搜索；文献 [8] 构建基于多层空中计算网络的搜索框架，通过高、低空 UAV 协作提高搜索效率。然而，这些方法忽略动态目标的位置变化，无法满足目标重新出现在已搜索区域时的持续探测需求。针对动态目标，文献 [9] 通过反复搜索区域实现连续探测，但这种重复搜索方法缺少引导策略，效率较低。文献 [18] 设计了基于数字信息素的重访策略，驱动 UAV 周期性访问长时间未被搜索的区域；但该策略不会优先考虑目标存在概率较高的区域，因而可能延迟搜索响应并削弱动态目标搜索性能。为解决这一问题，本文提出基于双模式信息素的高效搜索机制：优先搜索目标存在概率较高及长时间未访问的区域，同时避免重复搜索近期已探索区域，从而实现高效动态目标搜索。
+
+<a id="S014"></a>
+### B. 基于 MARL 的多无人机协同轨迹规划
+
+**Source:** pp.2–3 S014
+
+**Original:** Leveraging its strengths in distributed cooperative decision-making and online policy optimization, MARL has been widely applied to cooperative trajectory planning for multi-UAV target search [19]. In [4], the authors developed a MARL-based method to jointly optimize computation offloading and trajectory planning for UAVs, aiming to minimize the uncertainty of the search area. The authors of [13] proposed a distributed trajectory planning method based on MARL, improving the target search success rate in large-scale search scenarios. However, these methods directly adopt the original optimization objectives as reward functions. UAVs cannot receive effective reward signals until the search mission is complete, leading to the sparse reward problem. This problem consequently hinders the acquisition of feasible trajectory planning policies for target search. Existing studies have employed manual reward shaping methods, in which optimization objectives are decomposed into dense reward components, thereby providing continuous feedback to UAV agents. The authors of [14] designed artificial reward rules based on the odor effect to enhance the target search efficiency of UAVs. A refined reward scheme was developed in [15] to balance rapid target search and the minimization of environmental uncertainty. In [11], the authors designed a weighted reward function for UAV agents, incorporating cognitive, target search, and boundary constraint reward terms. Nevertheless, the performance of these manual reward shaping methods heavily relies on designers’ domain knowledge. Moreover, the design process requires extensive manual iterative tuning, which limits the adaptability of such methods to complex dynamic target search scenarios.
+
+**中文:** 凭借分布式协同决策和在线策略优化方面的优势，MARL 已被广泛用于多 UAV 目标搜索的协同轨迹规划 [19]。文献 [4] 开发了一种基于 MARL 的方法，联合优化 UAV 的计算卸载和轨迹规划，以最小化搜索区域的不确定度；文献 [13] 提出基于 MARL 的分布式轨迹规划方法，提高了大规模搜索场景中的目标搜索成功率。然而，这些方法直接把原始优化目标作为奖励函数，UAV 往往要到搜索任务完成后才能获得有效奖励信号，由此产生稀疏奖励问题，并妨碍可行目标搜索轨迹策略的学习。为提供连续反馈，已有研究通过人工奖励塑形把优化目标分解为多个稠密奖励分量。文献 [14] 基于气味效应设计人工奖励规则，以提高 UAV 目标搜索效率；文献 [15] 设计精细化奖励方案，在快速搜索目标与降低环境不确定度之间取得平衡；文献 [11] 则为 UAV 智能体设计包含认知、目标搜索和边界约束项的加权奖励函数。不过，这些人工奖励塑形方法的性能高度依赖设计者的领域知识，而且需要大量人工迭代调参，限制了其对复杂动态目标搜索场景的适应能力。
+
+<a id="S015"></a>
+### C. LLM 奖励塑形
+
+**Source:** p.3 S015
+
+**Original:** Endowed with extensive knowledge acquired during pretraining and powerful semantic reasoning capabilities, LLMs have offered a novel paradigm for agent planning and reward design in MARL [20]. The authors of [21] utilized LLMs to generate heuristic functions, significantly accelerating the policy convergence of DRL agents. In [22], the authors leveraged the advanced reasoning capabilities of LLMs to generate complex reward signals for evaluating DRL policies. Although these studies demonstrate the feasibility of using LLMs for reward design, they do not sufficiently account for LLMs’ inherent hallucination risks, making it difficult to ensure alignment between LLM-generated reward functions and actual mission objectives. To address this challenge, an LLM-based evolutionary algorithm was proposed in [17], improving the cooperative efficiency of MARL agents by iteratively refining LLM-generated functions. Similarly, [23] presented the EUREKA algorithm, which employed evolutionary search and reward reflection to iteratively propose and refine LLM-generated rewards. However, these algorithms require repeated agent training to evaluate the quality of the generated functions, resulting in high training costs.
+
+**中文:** LLM 拥有从预训练中获得的广泛知识和强大的语义推理能力，为 MARL 中的智能体规划与奖励设计提供了新范式 [20]。文献 [21] 使用 LLM 生成启发式函数，显著加快了 DRL 智能体的策略收敛；文献 [22] 利用 LLM 的高级推理能力生成复杂奖励信号，用于评价 DRL 策略。虽然这些研究证明了使用 LLM 设计奖励的可行性，但它们没有充分考虑 LLM 固有的幻觉风险，因而难以确保生成的奖励函数与实际任务目标一致。为应对这一问题，文献 [17] 提出基于 LLM 的进化算法，通过迭代改进 LLM 生成函数来提升 MARL 智能体的协作效率。类似地，文献 [23] 提出 EUREKA，利用进化搜索和奖励反思机制迭代提出并改进 LLM 生成的奖励。然而，这些算法需要反复训练智能体来评估生成函数的质量，导致训练成本很高。
+
+<a id="S070"></a>
+**Source:** p.3 S070
+
+**Original:** In contrast, we propose a training-free LLM reward shaping scheme, in which candidate reward functions are iteratively evaluated and optimized according to the computed mission performance, without retraining agents. This scheme improves the quality of LLM-generated reward functions while reducing the computational cost of reward evaluation.
+
+**中文:** 与上述方法不同，本文提出一种无需训练的 LLM 奖励塑形方案：依据计算得到的任务性能，对候选奖励函数进行迭代评估和优化，而无须重新训练智能体。该方案在提高 LLM 生成奖励函数质量的同时，降低了奖励评估的计算成本。
+
+---
+
+<a id="S016"></a>
+## III. 系统模型与问题表述 / System Model and Problem Formulation
+
+### A. 系统模型 / System Model
+
+**Source:** p.3 S016
+
+**Original:** We investigate a scenario in which multiple UAVs perform dynamic target search, as illustrated in Fig. 1. The search area is a rectangular area of size $X\,\mathrm{m}\times Y\,\mathrm{m}$. We discretize the area into $I=L_X\times L_Y$ grids with a unit length of $L$ m. We denote the set of grids as $\mathcal{G}=\{g_1,g_2,\ldots,g_I\}$. The position of grid $g_i\in\mathcal{G}$ is denoted as $p_i=(x_i,y_i)$. Three-dimensional static obstacles and dynamic ground targets are randomly distributed in the search area, and prior information regarding their numbers and positions is unavailable. The entire mission duration is defined as an episode and discretized into $T$ time steps. The set of UAVs is $\mathcal{U}=\{u_1,u_2,\ldots,u_N\}$, and the 3D position of UAV $u_n$ at time step $t$ is $p_n(t)=(x_n(t),y_n(t),z_n(t))$. The objective is to maximize the number of searched targets and minimize the average uncertainty of the search area by planning cooperative trajectories, while avoiding UAV–UAV and UAV–obstacle collisions.
+
+**中文:** 本文研究多个 UAV 协同执行动态目标搜索的场景，如图 1 所示。搜索区域是尺寸为 $X\,\mathrm{m}\times Y\,\mathrm{m}$ 的矩形，并被离散为 $I=L_X\times L_Y$ 个边长为 $L$ m 的网格；网格集合记为 $\mathcal{G}=\{g_1,g_2,\ldots,g_I\}$，其中 $g_i$ 的位置为 $p_i=(x_i,y_i)$。搜索区域内随机分布着三维静态障碍物和动态地面目标，二者的数量与位置均无先验信息。一次完整搜索任务定义为一个 episode，并离散为 $T$ 个时间步。UAV 集合为 $\mathcal{U}=\{u_1,u_2,\ldots,u_N\}$，UAV $u_n$ 在时间步 $t$ 的三维位置为 $p_n(t)=(x_n(t),y_n(t),z_n(t))$。本文通过规划多 UAV 协同轨迹，在避免 UAV 之间以及 UAV 与障碍物之间发生碰撞的同时，最大化已搜索目标数并最小化搜索区域的平均不确定度。
+
+<a id="F001"></a>
+### 图 1. 多无人机动态目标搜索场景
+
+**Placed near:** p.3 S016  
+**Source:** p.3 C001
+
+![Multi-UAV dynamic target search scenario](assets/fig1.png)
+
+**Original caption:** Fig. 1: Multi-UAV dynamic target search scenario.
+
+**中文图注:** 图 1：多无人机动态目标搜索场景。
+
+**Reading note:** 图中同时包含动态地面目标、不同高度的静态障碍物、UAV 感知范围与网格化搜索区域；后续状态、动作和约束均建立在这一三维场景上。
+
+<a id="S017"></a>
+### B. UAV 能耗模型 / UAV Energy Consumption Model
+
+**Source:** p.3 S017
+
+**Original:** Given the relatively short duration of UAV acceleration and deceleration maneuvers, we neglect the associated energy consumption [10]. The propulsive power consumption of UAV $u_n$ at time step $t$ depends on its flight speed $v_n(t)$ and is modeled as [25]. Here, $P_b$ and $P_d$ denote blade profile power and induced power, respectively; $U_{tip}$ is the rotor tip speed; $v_0$ is the average induced velocity of the rotor in hover; and $d$, $\rho$, $s$, and $A$ represent the fuselage drag coefficient, air density, rotor solidity, and rotor disk area.
+
+**中文:** 由于 UAV 加速和减速过程持续时间较短，本文忽略这两个阶段的能耗 [10]。UAV $u_n$ 在时间步 $t$ 的推进功率取决于飞行速度 $v_n(t)$，其模型见公式 (1) [25]。其中，$P_b$ 和 $P_d$ 分别表示桨叶剖面功率与诱导功率；$U_{tip}$ 为旋翼叶尖速度；$v_0$ 为旋翼悬停时的平均诱导速度；$d$、$\rho$、$s$ 和 $A$ 分别表示机身阻力系数、空气密度、旋翼实度和旋翼盘面积。
+
+<a id="E001"></a>
+**Source:** p.3 E001 · Eq. (1)
+
+![Original equation E001](assets/equations/E001.png)
+
+**中文说明:** 公式 (1) 给出旋翼 UAV 的推进功率，其中包含桨叶剖面功率、诱导功率和寄生阻力功率三部分。
+
+<a id="S018"></a>
+**Source:** p.3 S018
+
+**Original:** Accordingly, the propulsive energy consumption of UAV $u_n$ is given by Eq. (2), where $\Delta t$ denotes the fixed duration of each time step. The remaining energy of UAV $u_n$ at the beginning of time step $t$ is expressed by Eq. (3), where $E^{ini}$ denotes the initial energy of the UAVs.
+
+**中文:** 因此，UAV $u_n$ 在一个时间步内的推进能耗由公式 (2) 给出，其中 $\Delta t$ 表示每个时间步的固定时长。时间步 $t$ 开始时 UAV $u_n$ 的剩余能量由公式 (3) 表示，其中 $E^{ini}$ 为 UAV 的初始能量。
+
+<a id="E002"></a>
+**Source:** p.3 E002 · Eq. (2)
+
+![Original equation E002](assets/equations/E002.png)
+
+<a id="E003"></a>
+**Source:** p.3 E003 · Eq. (3)
+
+![Original equation E003](assets/equations/E003.png)
+
+<a id="S019"></a>
+### C. 传感器模型 / Sensor Model
+
+**Source:** pp.3–4 S019
+
+**Original:** Each UAV is equipped with an onboard sensor featuring a limited sensing range and detection accuracy, both of which are directly influenced by flight altitude. A higher altitude enlarges the sensing range but reduces the detection probability and increases the false alarm probability [26]. We use $S_n(z_n(t))$, $P_n^D(z_n(t))$, and $P_n^F(z_n(t))$ to denote the maximum sensing radius, detection probability, and false alarm probability of UAV $u_n$ at time step $t$, respectively. The sensing domain $\Phi_n(t)$ is defined as the set of grids within the sensor's field of view, as shown in Eq. (4), where $S_n(z_n(t))=z_n(t)\tan(\theta_n/2)/L$ and $\theta_n$ is the field-of-view angle.
+
+**中文:** 每架 UAV 均配备感知范围和检测精度有限的机载传感器，这两项性能都直接受飞行高度影响。飞行高度升高会扩大传感范围，但同时降低检测概率并提高虚警概率 [26]。本文分别用 $S_n(z_n(t))$、$P_n^D(z_n(t))$ 和 $P_n^F(z_n(t))$ 表示 UAV $u_n$ 在时间步 $t$ 的最大感知半径、检测概率与虚警概率。感知域 $\Phi_n(t)$ 定义为传感器视场内所有网格的集合，见公式 (4)，其中 $S_n(z_n(t))=z_n(t)\tan(\theta_n/2)/L$，$\theta_n$ 为传感器视场角。因此，$\Phi_n(t)$ 通过 $S_n(z_n(t))$ 显式反映飞行高度的影响。
+
+<a id="E004"></a>
+**Source:** p.4 E004 · Eq. (4)
+
+![Original equation E004](assets/equations/E004.png)
+
+<a id="S020"></a>
+**Source:** p.4 S020
+
+**Original:** To account for target dynamics, $\zeta_i(t)$ denotes the target-existence state of grid $g_i$ at time step $t$: $\zeta_i(t)=1$ indicates that a target exists and $\zeta_i(t)=0$ otherwise. If UAV $u_n$ detects a target in $g_i$, the result is $D_{n,i}(t)=1$; otherwise it is zero. The detection and false-alarm probabilities are defined by the conditional probabilities in Eq. (5).
+
+**中文:** 为描述目标动态性，本文以 $\zeta_i(t)$ 表示时间步 $t$ 时网格 $g_i$ 的目标存在状态：$\zeta_i(t)=1$ 表示网格中存在目标，否则 $\zeta_i(t)=0$。若 UAV $u_n$ 在网格 $g_i$ 中检测到目标，则检测结果 $D_{n,i}(t)=1$，否则为 0。检测概率和虚警概率通过公式 (5) 中的条件概率定义：前者表示“目标确实存在时检测到目标”的概率，后者表示“目标不存在时仍报告检测到目标”的概率。
+
+<a id="E005"></a>
+**Source:** p.4 E005 · Eq. (5)
+
+![Original equation E005](assets/equations/E005.png)
+
+<a id="S021"></a>
+### D. 环境感知地图模型 / Environmental Perception Map Model
+
+**Source:** p.4 S021
+
+**Original:** Each UAV independently maintains local environmental perception maps comprising a Local Target Probability Map (LTPM) and a Local Environmental Uncertainty Map (LEUM), which quantify its cognitive state of the search environment [13]. During search, each UAV continuously collects detection data through its onboard sensor and dynamically updates these maps to support trajectory planning.
+
+**中文:** 每架 UAV 独立维护一组局部环境感知地图，其中包括局部目标概率图（LTPM）和局部环境不确定度图（LEUM），用于量化 UAV 对搜索环境的认知状态 [13]。搜索过程中，各 UAV 通过机载传感器持续采集环境检测数据并动态更新地图，为轨迹规划提供数据支持。
+
+<a id="S022"></a>
+**Source:** p.4 S022
+
+**Original:** The LTPM is defined as $\mathcal{M}_n^P=\{p_{n,i}(t)\mid g_i\in\Phi_n(t)\}$, where $p_{n,i}(t)\in[0,1]$ represents UAV $u_n$'s belief probability that a target is present in grid $g_i$ [28]. Based on new sensor data, $p_{n,i}(t+1)$ is updated using Bayes' theorem [29], as shown in Eq. (6). UAVs tend to prioritize grids with larger $p_{n,i}(t)$.
+
+**中文:** LTPM 定义为 $\mathcal{M}_n^P=\{p_{n,i}(t)\mid g_i\in\Phi_n(t)\}$，其中 $p_{n,i}(t)\in[0,1]$ 表示 UAV $u_n$ 相信网格 $g_i$ 中存在目标的概率 [28]。依据机载传感器获得的新数据，利用贝叶斯定理按公式 (6) 更新 $p_{n,i}(t+1)$ [29]。UAV 会优先搜索 $p_{n,i}(t)$ 较高的网格。
+
+<a id="E006"></a>
+**Source:** p.4 E006 · Eq. (6) · visual fallback
+
+![Original equation E006](assets/equations/E006.png)
+
+**中文说明:** 该分段式分别处理“检测到目标”“未检测到目标”和“网格不在感知域内”三种情形；第三种情形保持原先概率不变。
+
+<a id="S023"></a>
+**Source:** p.4 S023
+
+**Original:** The LEUM is defined as $\mathcal{M}_n^U=\{\chi_{n,i}(t)\mid g_i\in\Phi_n(t)\}$. Here, $\chi_{n,i}(t)\in[0,1]$ is the information entropy of $p_{n,i}(t)$ and quantifies UAV $u_n$'s perceptual uncertainty about grid $g_i$, as calculated in Eq. (7).
+
+**中文:** LEUM 定义为 $\mathcal{M}_n^U=\{\chi_{n,i}(t)\mid g_i\in\Phi_n(t)\}$。其中，$\chi_{n,i}(t)\in[0,1]$ 是 $p_{n,i}(t)$ 的信息熵，用于量化 UAV $u_n$ 对网格 $g_i$ 的感知不确定性，计算方式见公式 (7)。当目标存在概率接近 0.5 时，不确定度最大；概率接近 0 或 1 时，不确定度较低。
+
+<a id="E007"></a>
+**Source:** p.4 E007 · Eq. (7)
+
+![Original equation E007](assets/equations/E007.png)
+
+<a id="S024"></a>
+**Source:** p.4 S024
+
+**Original:** To improve multi-UAV search efficiency, each UAV shares its LTPM and LEUM with the others, constructing a Global Target Probability Map (GTPM) and a Global Environmental Uncertainty Map (GEUM). For each grid, the UAV with the lowest local environmental uncertainty is considered to provide the most reliable local estimate [9]. Hence, the global uncertainty $\chi_i(t)$ is the minimum of all local uncertainties, as in Eq. (8), and the average area uncertainty $\chi^{area}(t)$ is given by Eq. (9).
+
+**中文:** 为提高多 UAV 系统的搜索效率，各 UAV 相互共享 LTPM 和 LEUM，并通过信息融合构建全局目标概率图（GTPM）与全局环境不确定度图（GEUM）。对于每个网格，局部环境不确定度最低的 UAV 被认为能提供最可靠的局部估计 [9]。因此，全局不确定度 $\chi_i(t)$ 取所有 UAV 局部不确定度的最小值，如公式 (8) 所示；整个搜索区域在时间步 $t$ 的平均不确定度 $\chi^{area}(t)$ 则由公式 (9) 给出。
+
+<a id="E008"></a>
+**Source:** p.4 E008 · Eq. (8)
+
+![Original equation E008](assets/equations/E008.png)
+
+<a id="E009"></a>
+**Source:** p.4 E009 · Eq. (9)
+
+![Original equation E009](assets/equations/E009.png)
+
+<a id="S025"></a>
+**Source:** p.4 S025
+
+**Original:** If only one UAV has the lowest local uncertainty for grid $g_i$, its local target probability is selected as the global target probability. If several UAVs share the same minimum uncertainty, the largest local target probability among them is selected, increasing that grid's priority in subsequent searches. The resulting GTPM is $\mathcal{M}^P=\{p_i(t)\mid g_i\in\mathcal{G}\}$, with $p_i(t)$ defined by Eq. (10). Based on $p_i(t)$ and the true target state $\zeta_i(t)$, the target-search indicator is defined by Eq. (11). A target is deemed successfully searched when it exists in $g_i$ and the UAVs have confidence at least $\xi$ in its presence.
+
+**中文:** 若某个网格 $g_i$ 只有一架 UAV 具有最低局部不确定度，则将该 UAV 的局部目标概率作为该网格的全局目标概率；若多架 UAV 的局部不确定度并列最低，则从中选择最大的局部目标概率，以提高该网格在后续搜索中的优先级。由此得到 GTPM：$\mathcal{M}^P=\{p_i(t)\mid g_i\in\mathcal{G}\}$，其中 $p_i(t)$ 由公式 (10) 定义。再结合 $p_i(t)$ 与真实目标状态 $\zeta_i(t)$，按公式 (11) 定义目标搜索指示函数。只有当网格中确实存在目标，且 UAV 对目标存在的置信度不低于阈值 $\xi$ 时，才认为目标被成功搜索。
+
+<a id="E010"></a>
+**Source:** p.4 E010 · Eq. (10)
+
+![Original equation E010](assets/equations/E010.png)
+
+<a id="E011"></a>
+**Source:** p.4 E011 · Eq. (11)
+
+![Original equation E011](assets/equations/E011.png)
+
+<a id="S026"></a>
+**Source:** p.4 S026
+
+**Original:** Positional variations of dynamic targets cause $\zeta_i(t)$ to vary over time. This affects the detection and false-alarm probabilities in Eq. (5), which together with $\zeta_i(t)$ drive the update of $p_{n,i}(t)$ in Eq. (6). The effects then propagate to the GEUM in Eq. (8) and GTPM in Eq. (10). Consequently, both $\chi^{area}(t)$ in Eq. (9) and the target-search indicator in Eq. (11) are uncertain and time varying. This fundamentally differs from static scenarios, where each grid's target-presence state is fixed and the mission is complete once the belief probability exceeds a threshold.
+
+**中文:** 动态目标的位置变化使网格目标存在状态 $\zeta_i(t)$ 随时间变化。这一变化会影响公式 (5) 中的检测概率与虚警概率；随后，这些概率与 $\zeta_i(t)$ 共同驱动公式 (6) 中 $p_{n,i}(t)$ 的更新，并进一步传播到公式 (8) 的 GEUM 和公式 (10) 的 GTPM。因此，由全局地图得到的区域平均不确定度 $\chi^{area}(t)$ 以及目标搜索指示函数都具有不确定性和时变性。这与静态场景存在根本区别：静态场景中每个网格的目标存在状态固定，一旦置信概率超过预设阈值，相关搜索任务即可视为完成。
+
+<a id="S027"></a>
+### E. 问题表述 / Problem Formulation
+
+**Source:** pp.4–5 S027
+
+**Original:** The trajectories of multiple UAVs in an episode are denoted by $\mathcal{T}=\{\mathcal{T}_n\mid \forall u_n\in\mathcal{U}\}$, where $\mathcal{T}_n=\{p_n(t)\mid t=1,\ldots,T\}$ is the position sequence of UAV $u_n$. The objective is to optimize cooperative trajectories to maximize the number of searched targets and minimize the average uncertainty of the entire search area, subject to collision-avoidance constraints between UAVs and between UAVs and obstacles. The optimization problem is formulated in Eq. (12).
+
+**中文:** 一个 episode 内多架 UAV 的轨迹集合记为 $\mathcal{T}=\{\mathcal{T}_n\mid \forall u_n\in\mathcal{U}\}$，其中 $\mathcal{T}_n=\{p_n(t)\mid t=1,\ldots,T\}$ 表示 UAV $u_n$ 在全部时间步上的位置序列。本文优化多 UAV 协同轨迹，在满足 UAV–UAV 和 UAV–障碍物避碰约束的前提下，最大化已搜索目标数并最小化整个搜索区域的平均不确定度。完整优化问题见公式 (12)。
+
+<a id="E012"></a>
+**Source:** p.5 E012 · Eqs. (12a–12i) · visual fallback
+
+![Original equation E012](assets/equations/E012.png)
+
+**中文说明:** (12a) 是累计已搜索目标数减去任务终止时区域不确定度的优化目标；(12b–c) 限制水平位置；(12d–e) 分别约束 UAV 间和 UAV–障碍物间安全距离；(12f) 保证返航所需最低能量；(12g–i) 描述高度升高时感知半径增大、检测概率降低、虚警概率升高的传感器特性。
+
+<a id="S028"></a>
+**Source:** p.5 S028
+
+**Original:** The objective in Eq. (12) produces non-zero outputs only at sparse time steps when UAVs successfully search a target or when the mission ends. This fails to provide continuous learning guidance and creates the sparse-reward problem for MARL, preventing agents from efficiently learning optimal trajectory-planning policies. To address it, LLMs are introduced into reward-function design to provide dense and informative signals at every time step. In addition, a pheromone-based mechanism is developed to cope with the uncertainty and time-varying characteristics caused by dynamic targets, helping maximize Eq. (12) and improve search efficiency.
+
+**中文:** 公式 (12) 的目标函数只会在 UAV 成功搜索到目标或整个任务结束的少数时间步产生非零输出，因此无法提供连续的学习引导，并使 MARL 面临稀疏奖励问题，妨碍智能体有效学习最优轨迹规划策略。为此，本文将 LLM 引入 MARL 奖励函数设计，使智能体在每个时间步都能获得稠密且信息充分的奖励信号。同时，本文设计基于信息素的机制来应对动态目标引起的不确定性和时变特征，从而促进公式 (12) 优化目标的最大化并提高动态目标搜索效率。
+
+---
+
+<a id="S029"></a>
+## IV. 所提方法 / Proposed Solutions
+
+**Source:** p.5 S029
+
+**Original:** In this section, we propose an LLM-guided Multi-Agent Proximal Policy Optimization (LLM-MAPPO) algorithm for multi-UAV cooperative trajectory planning in dynamic target search. We first develop a Dual-mode Pheromone-based Efficient Search (DPES) mechanism to enable UAVs to respond promptly to dynamic targets. We then design an offline LLM Reward Shaping (LRS) scheme to generate a high-quality reward function aligned with the optimization objective. Furthermore, we construct a task-oriented optimization framework for multi-UAV trajectory planning, which uses the reward function to provide dense training signals for MAPPO agents and incorporates dual-mode pheromones into policy inputs during training and execution.
+
+**中文:** 本节提出面向动态目标搜索中多 UAV 协同轨迹规划的 LLM-MAPPO 算法。首先设计基于双模式信息素的高效搜索（DPES）机制，使 UAV 能够及时响应动态目标；随后设计离线 LLM 奖励塑形（LRS）方案，生成与优化目标一致的高质量奖励函数；最后构建面向任务的多 UAV 轨迹规划优化框架，以该奖励函数为 MAPPO 智能体提供稠密训练信号，并在训练和执行阶段把双模式信息素纳入策略输入。
+
+<a id="S030"></a>
+### A. 基于双模式信息素的高效搜索机制 / Dual-mode Pheromone-based Efficient Search
+
+**Source:** p.5 S030
+
+**Original:** To address changes in dynamic-target positions and improve UAV search efficiency, DPES uses dual-mode pheromones to characterize both the spatiotemporal probability distribution of targets and the timeliness of UAV perceptual information. Attractive pheromones guide UAVs toward high-value grids with high target-presence probabilities and long-unvisited grids that may contain targets. A repulsive pheromone discourages repeated search of grids whose target states have recently been confirmed, avoiding redundant searches and improving the utilization of sensing payloads and onboard energy.
+
+**中文:** 为应对动态目标的位置变化并提高搜索效率，DPES 使用双模式信息素同时描述目标的时空概率分布和 UAV 感知信息的时效性。吸引信息素引导 UAV 前往目标存在概率较高的高价值网格，以及可能重新出现目标的长时间未访问网格；排斥信息素则抑制 UAV 在短时间内反复搜索目标状态已经确认的网格，从而避免冗余搜索，更有效地利用有限的感知载荷和机载能源。
+
+<a id="S031"></a>
+**Source:** p.5 S031
+
+**Original:** Each grid is classified using its current target probability $p_{n,i}(t)$ and last-visit time $t_i^{last}$. High-value grids $\mathcal{G}_{hv}$ have medium-to-high target probability but do not yet meet the criterion for confirming target presence. Long-unvisited grids $\mathcal{G}_{lu}$ have not been visited for longer than threshold $D$, so their earlier perceptual information is no longer timely. Confirmed-state grids $\mathcal{G}_{cs}$ were recently visited and their target state is known with high confidence. All remaining grids form $\mathcal{G}_{other}$. The category $C(g_i)$ is defined by Eq. (13).
+
+**中文:** DPES 根据当前目标概率 $p_{n,i}(t)$ 和网格上次访问时间 $t_i^{last}$ 对网格分类。高价值网格 $\mathcal{G}_{hv}$ 的目标概率处于中高水平，但尚未达到确认目标存在状态的标准；长时间未访问网格 $\mathcal{G}_{lu}$ 距离上次访问已超过阈值 $D$，原有感知信息因而失去时效性；已确认状态网格 $\mathcal{G}_{cs}$ 在近期被访问过，且目标存在或不存在的状态已被高置信度确认；其余网格归为 $\mathcal{G}_{other}$。具体分类规则由公式 (13) 给出。
+
+<a id="E013"></a>
+**Source:** p.5 E013 · Eq. (13)
+
+![Original equation E013](assets/equations/E013.png)
+
+<a id="S032"></a>
+**Source:** p.6 S032
+
+**Original:** For high-value grids, visiting UAVs release an attractive pheromone. To account for target movement, it evaporates with coefficient $E_s$ and diffuses to adjacent grids with coefficient $G_s$. The update is given by Eq. (14), where $dp_i(t-1)$ is the residual pheromone, $d_i^{hv}(t)$ is the released amount, and $f_i(t)$ is the total pheromone diffused from adjacent grids, as defined in Eq. (15).
+
+**中文:** 对于高价值网格，UAV 访问并推断其中可能存在目标时释放吸引信息素。考虑到目标可能移动，该信息素以系数 $E_s$ 蒸发，并以系数 $G_s$ 向相邻网格扩散，从而把 UAV 引向目标可能迁移的区域。更新规则见公式 (14)，其中 $dp_i(t-1)$ 为上一时间步残留的信息素，$d_i^{hv}(t)$ 为当前释放量，$f_i(t)$ 为相邻网格扩散至 $g_i$ 的信息素总量，后者由公式 (15) 定义。
+
+<a id="E014"></a>
+**Source:** p.6 E014 · Eq. (14)
+
+![Original equation E014](assets/equations/E014.png)
+
+<a id="E015"></a>
+**Source:** p.6 E015 · Eq. (15)
+
+![Original equation E015](assets/equations/E015.png)
+
+<a id="S033"></a>
+**Source:** p.6 S033
+
+**Original:** Once a grid remains unvisited longer than $D$, it releases an attractive pheromone to trigger revisiting. This persistent signal neither evaporates nor diffuses and is reset immediately after a visit; its update reduces to Eq. (16). After UAVs confirm a grid's target state, a repulsive pheromone is released to avoid short-term redundant searches. It evaporates with coefficient $E_s$, does not diffuse, and is reset once the elapsed time exceeds $D$, as shown in Eq. (17). Other grids release neither pheromone.
+
+**中文:** 当网格未被访问的时长超过 $D$ 后，它会释放吸引信息素以引导 UAV 重访。为保持持续搜索信号，该信息素既不蒸发也不扩散，并在网格被访问后立即清零，其更新规则化简为公式 (16)。当 UAV 已确认某网格中的目标状态后，该网格释放排斥信息素，以避免短期内的冗余搜索；该信息素按系数 $E_s$ 随时间蒸发，不向外扩散，并在未访问时长超过 $D$ 后完全重置，如公式 (17) 所示。其他网格不释放吸引或排斥信息素。
+
+<a id="E016"></a>
+**Source:** p.6 E016 · Eq. (16)
+
+![Original equation E016](assets/equations/E016.png)
+
+<a id="E017"></a>
+**Source:** p.6 E017 · Eq. (17)
+
+![Original equation E017](assets/equations/E017.png)
+
+<a id="S034"></a>
+**Source:** p.6 S034
+
+**Original:** Algorithm 1 first classifies each grid according to Eq. (13), then calculates its pheromone using the corresponding rule in Eqs. (14)–(17). The result is $dp_i(t)$. The pheromones within UAV $u_n$'s sensing domain are denoted by $DP_n(t)=\{dp_i(t)\mid g_i\in\Phi_n(t)\}$.
+
+**中文:** 算法 1 首先根据公式 (13) 对每个网格进行分类，再按照该类别对应的公式 (14)–(17) 计算信息素 $dp_i(t)$。UAV $u_n$ 感知域内各网格的信息素集合记为 $DP_n(t)=\{dp_i(t)\mid g_i\in\Phi_n(t)\}$，并作为后续策略网络的输入。
+
+<a id="S035"></a>
+### B. LLM 奖励塑形方案 / LLM Reward Shaping Scheme
+
+**Source:** pp.6–7 S035
+
+**Original:** The LRS scheme is conducted offline before MARL training. It uses the LLM's pretrained knowledge and semantic reasoning to generate a high-quality reward function that provides dense rewards during policy learning. Unlike methods that evaluate candidate rewards through repeated agent training, LRS uses a training-free iterative evaluation and optimization process: LLM-generated functions are evaluated according to the mission performance of their induced trajectories. This lowers evaluation cost while improving reward quality.
+
+**中文:** LRS 在 MARL 训练开始前离线执行，利用 LLM 的预训练知识和语义推理能力生成高质量奖励函数，在策略学习过程中为 UAV 智能体提供稠密奖励。与需要反复训练智能体来评估候选奖励函数的方法不同，LRS 采用无需训练的迭代评估与优化过程：依据候选奖励函数所诱导轨迹的任务性能进行评价，从而在提升奖励函数质量的同时降低评估计算成本。
+
+<a id="F002"></a>
+### 图 2. LLM 奖励塑形框架
+
+**Placed near:** p.7 S035  
+**Source:** p.7 C002
+
+![The framework of LLM reward shaping](assets/fig2.png)
+
+**Original caption:** Fig. 2: The framework of LLM reward shaping.
+
+**中文图注:** 图 2：LLM 奖励塑形框架。
+
+**Reading note:** 左侧初始化提示确定任务、推理指引和输出接口；右侧闭环用候选奖励诱导轨迹的原始任务性能进行反馈，逐轮选择并改进奖励函数。
+
+<a id="S036"></a>
+**Source:** p.7 S036
+
+**Original:** The LLM input must describe the core LLM-MAPPO components. The joint observation space is $\mathcal{O}(t)=\{O_1(t),\ldots,O_N(t)\}$, where $O_n(t)=\{p(t),\chi_n(t),ES_n(t)\}$ contains all UAV positions, uncertainty values in UAV $u_n$'s sensing domain, and target/obstacle existence states. The discrete action set for each UAV is $\{North,East,South,West,Ascend,Descend\}$; the first four actions change horizontal position and the last two change altitude. The reward is supplied by the optimal function generated through LRS.
+
+**中文:** 为使 LLM 理解任务，输入中需要明确 LLM-MAPPO 的核心组成。联合观测空间为 $\mathcal{O}(t)=\{O_1(t),\ldots,O_N(t)\}$，其中局部观测 $O_n(t)=\{p(t),\chi_n(t),ES_n(t)\}$ 包含全部 UAV 的三维位置、UAV $u_n$ 感知域内各网格的不确定度，以及目标和障碍物的存在状态。每架 UAV 的离散动作集合为 {北、东、南、西、上升、下降}：前四个动作只改变水平位置，后两个动作只改变高度。奖励由 LRS 生成的最优奖励函数提供。
+
+<a id="E018"></a>
+**Source:** p.7 E018 · Eq. (18)
+
+![Original equation E018](assets/equations/E018.png)
+
+<a id="E019"></a>
+**Source:** p.7 E019 · Eq. (19)
+
+![Original equation E019](assets/equations/E019.png)
+
+<a id="S037"></a>
+**Source:** p.7 S037
+
+**Original:** As illustrated in Fig. 2, LRS has an initialization phase and an iterative optimization phase. In initialization, prompt $P_1$ contains a task description, reasoning guidance, and an output template. The task description defines the LLM as a MARL reward-function designer and provides the scenario, objective, and constraints. Reasoning guidance embeds prior knowledge about target search and multi-agent cooperation. The output template fixes the function name, inputs, outputs, and interface so the generated code can be integrated into the MARL framework.
+
+**中文:** 如图 2 所示，LRS 包含初始化阶段和迭代优化阶段。初始化提示 $P_1$ 由任务描述、推理指导和输出模板三部分组成。任务描述把 LLM 的角色定义为 MARL 奖励函数设计者，并提供场景、优化目标和约束；推理指导融入多 UAV 目标搜索及多智能体协作的先验知识，帮助 LLM 识别关键目标；输出模板则预先规定函数名、输入、输出和接口，使生成的代码能够直接接入现有 MARL 训练框架。
+
+<a id="S038"></a>
+**Source:** p.8 S038
+
+**Original:** At iteration $k$, the LLM generates candidate reward $R_k\sim LLM(P_k)$. Starting from a fixed initial observation for comparability, the UAVs greedily select the joint action maximizing $R_k$ at each time step, as in Eq. (20), and execute a full episode to produce trajectory $\mathcal{T}_k$. The original mission objective $J(\mathcal{T}_k)$ from Eq. (12a) scores this trajectory. Candidate functions and scores are stored in buffer $B^R$, and the best function up to the current iteration is selected by Eq. (21).
+
+**中文:** 在第 $k$ 次迭代中，LLM 根据提示 $P_k$ 生成候选奖励函数 $R_k\sim LLM(P_k)$。为保证不同迭代间轨迹规划策略可比，所有评估均从固定初始观测出发；UAV 在每个时间步按公式 (20) 贪心选择使 $R_k$ 最大的联合动作，并执行一个完整 episode 得到轨迹 $\mathcal{T}_k$。随后使用公式 (12a) 的原始任务目标 $J(\mathcal{T}_k)$ 为该轨迹评分。候选函数及其得分被写入奖励函数缓冲区 $B^R$，再按公式 (21) 选出截至当前迭代的最优函数。
+
+<a id="E020"></a>
+**Source:** p.8 E020 · Eq. (20)
+
+![Original equation E020](assets/equations/E020.png)
+
+<a id="E021"></a>
+**Source:** p.8 E021 · Eq. (21)
+
+![Original equation E021](assets/equations/E021.png)
+
+<a id="S039"></a>
+**Source:** p.8 S039
+
+**Original:** The feedback prompt combines the code and performance of the current best function with underperforming candidates as negative examples, as represented in Eq. (22). Together with $P_1$, it forms the next prompt. Dynamic prompt updates encourage exploration of different reward decompositions, term combinations, and relative weights. The loop stops after $K$ iterations, and $R_K^{best}$ is used as the final high-quality reward $R^{best}$.
+
+**中文:** 反馈提示把当前最优奖励函数的代码及其性能指标，与若干表现较差的候选函数及得分共同组织起来；后者作为负面示例，具体集合见公式 (22)。反馈提示与初始提示 $P_1$ 组合成下一轮输入。动态更新提示可引导 LLM 探索不同的奖励分解方式、奖励项组合及关键任务因素的相对权重。达到预设迭代次数 $K$ 后，最终保留的 $R_K^{best}$ 被用作高质量奖励函数 $R^{best}$。
+
+<a id="E022"></a>
+**Source:** p.8 E022 · Eq. (22)
+
+![Original equation E022](assets/equations/E022.png)
+
+<a id="S040"></a>
+**Source:** p.8 S040
+
+**Original:** Algorithm 2 summarizes LRS. It evaluates each candidate through one episode and objective-based scoring, without repeated MARL training. Initialization and iterative feedback systematically guide task understanding, generation, and refinement, mitigating both sparse rewards and suboptimal functions caused by LLM hallucination while reducing evaluation cost.
+
+**中文:** 算法 2 汇总了 LRS 流程。每个候选函数只需通过一次完整任务交互和基于原始目标的性能评分进行评估，无须反复训练 MARL。初始化提示与迭代反馈系统地引导 LLM 理解任务、生成并改进奖励函数，从而同时缓解动态目标搜索中的稀疏奖励问题，以及 LLM 幻觉导致的次优奖励函数问题，并显著降低奖励评估成本。
+
+<a id="S041"></a>
+### C. 基于 LLM-MAPPO 的多无人机轨迹规划
+
+**Source:** pp.8–9 S041
+
+**Original:** LLM-MAPPO comprises a centralized Critic and multiple decentralized Actors. Before MAPPO training, the offline LRS scheme generates and optimizes the reward function. Each UAV's Actor then generates policy $\pi_{\theta_n}(a_n(t)\mid O_n(t),DP_n(t))$ from its local observation and pheromones, while the Critic estimates $V(O(t))$ from joint observations. Action masking constrains each Actor to a safe action space, preventing collisions [30].
+
+**中文:** LLM-MAPPO 由一个集中式 Critic 和多个分散式 Actor 组成。MAPPO 训练前，离线 LRS 方案生成并优化 UAV 智能体的奖励函数。随后，每架 UAV 上部署的 Actor 根据局部观测和信息素生成策略 $\pi_{\theta_n}(a_n(t)\mid O_n(t),DP_n(t))$；Critic 则利用全部 UAV 的联合观测估计状态价值 $V(O(t))$。为避免与其他 UAV 或障碍物碰撞，Actor 采用动作掩码，把决策限制在安全动作空间内 [30]。
+
+<a id="F003"></a>
+### 图 3. LLM-MAPPO 多无人机轨迹规划架构
+
+**Placed near:** p.9 S041  
+**Source:** p.9 C003
+
+![Architecture of LLM-MAPPO](assets/fig3.png)
+
+**Original caption:** Fig. 3: The architecture of LLM-MAPPO for multi-UAV trajectory planning.
+
+**中文图注:** 图 3：用于多无人机轨迹规划的 LLM-MAPPO 架构。
+
+**Reading note:** 训练阶段采用集中式 Critic、分散式 Actor；执行阶段各 UAV 仅以局部观测、双模式信息素和安全动作掩码独立输出动作。
+
+<a id="S042"></a>
+**Source:** p.9 S042
+
+**Original:** Each Actor maximizes PPO's clipped surrogate objective in Eq. (23). $A_t$ is the advantage estimated by the Critic; $r_t(\theta_n)$ is the probability ratio between new and old policies under action mask $m_n(t)$; and clipping coefficient $\epsilon$ bounds this ratio to $[1-\epsilon,1+\epsilon]$ for stable trust-region updates. Actor parameters are updated by gradient ascent using Eq. (24).
+
+**中文:** 每个 Actor 最大化公式 (23) 所示的 PPO 裁剪替代目标。其中，$A_t$ 是 Critic 估计的优势值；$r_t(\theta_n)$ 是在动作掩码 $m_n(t)$ 下新旧策略的概率比；裁剪系数 $\epsilon$ 将该比值限制在 $[1-\epsilon,1+\epsilon]$ 区间内，以保证信赖域内的稳定策略更新。Actor 参数按公式 (24) 通过梯度上升更新。
+
+<a id="E023"></a>
+**Source:** p.9 E023 · Eq. (23)
+
+![Original equation E023](assets/equations/E023.png)
+
+<a id="E024"></a>
+**Source:** p.9 E024 · Eq. (24)
+
+![Original equation E024](assets/equations/E024.png)
+
+<a id="S043"></a>
+**Source:** p.9 S043
+
+**Original:** The Critic minimizes the mean squared error between its value estimate and the target value, as in Eq. (25). $V_\phi(O(t))$ and $V_{\phi_{old}}(O(t))$ are the state values from the new and old Critic networks. Critic parameters are updated by gradient descent according to Eq. (26).
+
+**中文:** Critic 通过最小化价值估计与目标价值之间的均方误差进行更新，其损失见公式 (25)。$V_\phi(O(t))$ 和 $V_{\phi_{old}}(O(t))$ 分别表示新旧 Critic 网络给出的状态价值。Critic 参数按公式 (26) 通过梯度下降更新。
+
+<a id="E025"></a>
+**Source:** p.9 E025 · Eq. (25)
+
+![Original equation E025](assets/equations/E025.png)
+
+<a id="E026"></a>
+**Source:** p.9 E026 · Eq. (26)
+
+![Original equation E026](assets/equations/E026.png)
+
+<a id="S044"></a>
+**Source:** pp.9–10 S044
+
+**Original:** During execution, UAVs collect local observations, fuse them into GTPM and GEUM, use DPES to classify observed grids and update attractive and repulsive pheromones, and feed $O_n(t)$ and $DP_n(t)$ to each Actor. During training, transitions containing observations, pheromones, joint actions, immediate reward from $R^{best}$, and next observations are stored in an episode buffer. At episode end, Actor and Critic objectives are computed and parameters updated. Algorithm 3 repeats this interaction-and-update cycle until the preset number of episodes is reached.
+
+**中文:** 执行阶段，各 UAV 采集局部观测并融合得到 GTPM 和 GEUM；DPES 随后对观测网格分类并更新吸引、排斥信息素；每个 Actor 最终以 $O_n(t)$ 和 $DP_n(t)$ 为输入输出飞行动作。训练阶段则把观测、信息素、联合动作、由 $R^{best}$ 计算的即时奖励以及下一时刻观测组成转移样本并存入 episode 缓冲区。每个 episode 结束后计算 Actor 与 Critic 目标并更新参数。算法 3 重复“环境交互—数据收集—网络更新”循环，直至达到预设训练轮数。
+
+<a id="S045"></a>
+### D. 收敛性、稳定性与样本复杂度分析
+
+**Source:** p.10 S045
+
+**Original:** At LRS iteration $k$, the retained best metric $\eta_k$ is defined by Eq. (27). Since searched-target count is between 0 and $TI$ and terminal uncertainty is between 0 and 1, every induced trajectory satisfies $-1\le J(\mathcal{T}_k)\le TI$. Moreover, Eq. (28) shows that $\eta_k$ is monotone non-decreasing. Therefore the bounded sequence $\{\eta_k\}$ converges.
+
+**中文:** 在 LRS 第 $k$ 次迭代中，当前保留的最优性能指标 $\eta_k$ 由公式 (27) 定义。已搜索目标累计数位于 0 与 $TI$ 之间，任务终止时的区域平均不确定度位于 0 与 1 之间，因此任一候选奖励函数诱导的轨迹都满足 $-1\le J(\mathcal{T}_k)\le TI$。同时，公式 (28) 表明 $\eta_k$ 单调不减。因此，序列 $\{\eta_k\}$ 既有界又单调，必然收敛。
+
+<a id="E027"></a>
+**Source:** p.10 E027 · Eq. (27)
+
+![Original equation E027](assets/equations/E027.png)
+
+<a id="E028"></a>
+**Source:** p.10 E028 · Eq. (28)
+
+![Original equation E028](assets/equations/E028.png)
+
+<a id="S046"></a>
+**Source:** p.10 S046
+
+**Original:** After LRS, $R^{best}$ remains fixed during MAPPO training and execution, and all its reward terms are bounded. With finite state/action spaces and episode length, the advantage is bounded. Following [30], policy improvement has the lower bound in Eq. (29). PPO clipping keeps the trust-region deviation and penalty small; under the stated condition, an update does not degrade performance. The resulting bounded, monotone sequence of joint-policy performances therefore converges.
+
+**中文:** LRS 结束后，$R^{best}$ 在 MAPPO 训练和执行期间保持固定，且其中所有奖励项均有界。由于状态空间、动作空间和 episode 长度有限，优势函数也有界。依据文献 [30]，策略改进具有公式 (29) 给出的下界。PPO 裁剪使信赖域偏差和相应惩罚保持较小；在论文给定条件下，每次更新不会降低策略性能。因此，联合策略性能构成有界且单调不减的序列，从而收敛。
+
+<a id="E029"></a>
+**Source:** p.10 E029 · Eq. (29)
+
+![Original equation E029](assets/equations/E029.png)
+
+<a id="S047"></a>
+**Source:** p.10 S047
+
+**Original:** Because $R^{best}$ is fixed and PPO clipping bounds policy ratios, degradation from each MAPPO update is bounded; LLM hallucination can affect only the offline LRS candidates, while subsequent optimization remains locally stable. Under independent sampled joint transitions, Hoeffding's inequality gives the sample complexity of one update. Total sample use combines $K$ one-episode LRS evaluations of length $T$ with the samples required by $M_{upd}$ MAPPO updates.
+
+**中文:** 由于 $R^{best}$ 固定不变，且 PPO 裁剪限制各 UAV 的策略概率比，单次 MAPPO 更新造成的策略退化幅度有界。因此，LLM 幻觉的影响被限制在离线 LRS 的候选函数阶段，随后基于 $R^{best}$ 的策略优化保持局部稳定。在联合转移样本相互独立的标准假设下，可由 Hoeffding 不等式得到一次 MAPPO 更新的样本复杂度；总样本量由 $K$ 个长度为 $T$ 的单 episode LRS 评估和 $M_{upd}$ 次 MAPPO 策略更新所需样本共同构成。
+
+<a id="S048"></a>
+### E. 通信开销、计算可扩展性与使用成本
+
+**Source:** p.10 S048
+
+**Original:** Communication overhead mainly comes from sharing local perception maps to construct GTPM and GEUM. UAV $u_n$ transmits one entry $(i,p_{n,i}(t),\chi_{n,i}(t))$ for each grid in $\Phi_n(t)$. Under broadcast fusion, total overhead scales as $O(N\bar\Phi)$ and grows approximately linearly with UAV count. Computational cost consists of offline LRS and online planning: LRS invokes the LLM before training, whereas execution only performs map fusion, pheromone updates, and Actor inference, without online LLM calls.
+
+**中文:** 通信开销主要来自构建 GTPM 和 GEUM 时的局部感知地图共享。UAV $u_n$ 对感知域 $\Phi_n(t)$ 内每个网格发送一条 $(i,p_{n,i}(t),\chi_{n,i}(t))$ 信息。在广播式地图融合机制下，总通信开销按 $O(N\bar\Phi)$ 缩放，即随 UAV 数量近似线性增长。计算成本由离线 LRS 与在线轨迹规划两部分构成：LLM 只在训练前的 LRS 阶段被调用；执行阶段仅需地图融合、信息素更新和 Actor 推理，不进行在线 LLM 调用。
+
+---
+
+<a id="S049"></a>
+## V. 性能评估 / Performance Evaluation
+
+### A. 实验设置 / Experimental Setup
+
+**Source:** p.11 S049
+
+**Original:** We develop a Python-based simulation environment for multi-UAV dynamic target search. The search area is $2000\,\mathrm{m}\times2000\,\mathrm{m}$ and is discretized into $20\times20$ grids. Twenty static obstacles and fifteen dynamic targets are randomly distributed. Each target moves at a constant speed of 1 m/s in a random direction. The system comprises seven multi-rotor UAVs equipped with sensors. The propulsion parameters are $P_b=79.86$ W, $P_d=88.63$ W, $U_{tip}=120$ (rad·m)/s, $v_0=4.03$ m/s, $d=0.6$, $\rho=1.225$ kg/m³, $s=0.05$, and $A=0.503$ m² [10]. Other parameters are given in Table I.
+
+**中文:** 本文基于 Python 构建多 UAV 动态目标搜索仿真环境。搜索区域为 $2000\,\mathrm{m}\times2000\,\mathrm{m}$，离散成 $20\times20$ 个网格；区域内随机分布 20 个静态障碍物和 15 个动态目标，每个目标以 1 m/s 的恒定速度沿随机方向移动。多 UAV 系统包含 7 架配备传感器的多旋翼 UAV。推进能耗参数设置为 $P_b=79.86$ W、$P_d=88.63$ W、$U_{tip}=120$ (rad·m)/s、$v_0=4.03$ m/s、$d=0.6$、$\rho=1.225$ kg/m³、$s=0.05$、$A=0.503$ m² [10]；其他参数见表 I。
+
+<a id="T001"></a>
+### 表 I. UAV 参数设置
+
+**Placed near:** p.11 S049  
+**Source:** p.11 C004
+
+![UAV parameter settings](assets/table1.png)
+
+**Original caption:** TABLE I: UAV PARAMETER SETTINGS
+
+**中文表注:** 表 I：UAV 参数设置。时间步长 1 s，飞行速度 10 m/s，初始能量 $6\times10^4$ J；可选高度为 50、100、150 m，对应感知域大小 1、5、9，检测概率 0.9、0.8、0.7，虚警概率 0.1、0.2、0.3。
+
+<a id="S050"></a>
+**Source:** p.11 S050
+
+**Original:** Performance is evaluated using the cumulative number of searched targets and terminal average area uncertainty in Eq. (12). Target-search success rate is the fraction of initially present targets that are successfully searched. Target-search time is the time step at which the last target is found when all targets are found; otherwise the preset maximum time step is recorded [18].
+
+**中文:** 性能指标包括公式 (12) 中的累计已搜索目标数和任务终止时的区域平均不确定度。此外，本文采用文献 [18] 的目标搜索成功率和目标搜索时间衡量搜索效率。成功率是成功搜索目标数占任务区域初始目标总数的比例；若全部目标均被找到，搜索时间取最后一个目标被搜索到的时间步，否则记为预设的最大时间步。
+
+<a id="S051"></a>
+**Source:** p.11 S051
+
+**Original:** The compared methods are SAMARL [15], a static-target MARL coverage method; AMAPPO [9], a dynamic-target baseline based on repeated area search; MDPS [31], a greedy policy moving toward the grid with the highest current target probability; MDPS-improved, which adds DPES; EUREKA [23], which evaluates LLM rewards by training MAPPO agents; Handcraft, using manually designed dense rewards; LLM-MAPPO-OG, without reasoning guidance; LLM-MAPPO-OI, using only LRS initialization; and MAPPO, directly using the original sparse objective.
+
+**中文:** 对比算法包括：SAMARL [15]，面向静态目标、通过完整覆盖获取环境信息的 MARL 方法；AMAPPO [9]，通过重复区域搜索满足动态目标持续探测需求；MDPS [31]，贪心地引导 UAV 前往当前目标存在概率最高的网格；MDPS-improved，在 MDPS 中加入本文 DPES；EUREKA [23]，通过训练 MAPPO 智能体评估 LLM 生成奖励；Handcraft，采用人工设计的稠密奖励；LLM-MAPPO-OG，移除 LRS 推理指导提示；LLM-MAPPO-OI，仅保留 LRS 初始化阶段；MAPPO，直接使用原始稀疏优化目标作为奖励。
+
+<a id="T002"></a>
+### 表 II. LLM-MAPPO 参数设置
+
+**Placed near:** p.11 S051  
+**Source:** p.11 C005
+
+![LLM-MAPPO parameter settings](assets/table2.png)
+
+**Original caption:** TABLE II: LLM-MAPPO PARAMETER SETTINGS
+
+**中文表注:** 表 II：LLM-MAPPO 参数设置。网络为两层、每层 64 个节点的全连接网络，隐藏层使用 ReLU；学习率 0.0002，折扣因子 0.95；重访阈值 200，蒸发与扩散系数均为 0.1；$\mathcal{G}_{hv}$、$\mathcal{G}_{lu}$、$\mathcal{G}_{cs}$ 的释放量分别为 0.1、0.003、0.2。
+
+<a id="S052"></a>
+**Source:** pp.11–12 S052
+
+**Original:** DeepSeek-R1-7B is used as the LLM. All MARL algorithms are trained for 28,000 episodes with at most 500 time steps per episode. Testing uses the same settings and eight independent random seeds. SAMARL and AMAPPO are task-oriented baselines; MDPS and MDPS-improved isolate the contribution of DPES; EUREKA and Handcraft compare reward-design approaches; and MAPPO, LLM-MAPPO-OG, and LLM-MAPPO-OI are used for ablation of LRS and its components.
+
+**中文:** 实验采用 DeepSeek-R1-7B 作为 LLM 组件。所有 MARL 算法训练 28,000 个 episode，每个 episode 最多 500 个时间步；测试阶段在相同设置下使用 8 个独立随机种子。SAMARL 和 AMAPPO 作为任务基线；MDPS 与 MDPS-improved 用于隔离 DPES 的贡献；EUREKA 与 Handcraft 用于比较不同奖励设计方式；MAPPO、LLM-MAPPO-OG 和 LLM-MAPPO-OI 用于检验 LRS 及各组成部分。
+
+<a id="S053"></a>
+### B. 结果与分析 / Results and Analysis
+
+**Source:** p.12 S053
+
+**Original:** Fig. 4 shows that LLM-MAPPO and AMAPPO converge faster than other MARL algorithms. Handcraft depends heavily on designer knowledge and tuning; EUREKA incurs substantial cost because each generated reward is evaluated through agent training; and SAMARL performs many ineffective explorations because it ignores the spatiotemporal distribution of dynamic targets. LLM-MAPPO also has lower reward volatility than AMAPPO and EUREKA, indicating that LRS produces a reward function with stronger and more stable policy guidance.
+
+**中文:** 图 4 表明，LLM-MAPPO 和 AMAPPO 比其他 MARL 算法收敛更快。Handcraft 高度依赖设计者先验知识和人工调参；EUREKA 需要通过智能体训练评估每个生成奖励，计算开销较大、奖励改进效率较低；SAMARL 没有考虑动态目标的时空分布，在策略学习中产生大量无效探索。与 AMAPPO 和 EUREKA 相比，LLM-MAPPO 的训练奖励波动更小，说明 LRS 生成的奖励函数具有更强、更稳定的策略引导能力，可使智能体迅速学到适用于动态目标搜索的稳定轨迹规划策略。
+
+<a id="F004"></a>
+### 图 4. MARL 算法训练奖励曲线
+
+**Placed near:** p.12 S053  
+**Source:** p.12 C006
+
+![Training reward curves](assets/fig4.png)
+
+**Original caption:** Fig. 4: Training reward curves of MARL algorithms.
+
+**中文图注:** 图 4：MARL 算法的训练奖励曲线。
+
+<a id="S054"></a>
+**Source:** p.12 S054
+
+**Original:** Fig. 5 presents 3D search trajectories with obstacles of different heights. All UAVs avoid one another and the obstacles because action masking filters unsafe actions. Early in the mission, UAVs fly relatively high for wide-area perception, then descend for precise detection after potential targets are found. UAVs 1 and 2 promptly adjust altitude to search nearby targets after finding one target, and UAV 3 returns to high-altitude wide-area search after an unsuccessful attempt before eventually detecting its target. These behaviors show that LLM-MAPPO coordinates wide-area search, precise detection, and collision avoidance.
+
+**中文:** 图 5 展示了存在不同高度障碍物时一个 episode 内的三维搜索轨迹。动作掩码过滤不安全动作，因此所有 UAV 均成功避免彼此碰撞和撞击障碍物。任务早期，UAV 保持较高高度进行广域搜索，以快速感知全局环境；发现潜在目标后则自主下降进行精确检测。UAV 1 和 UAV 2 找到一个目标后及时调整高度搜索附近目标；UAV 3 首次搜索失败后迅速上升，恢复广域搜索并最终成功发现目标。这说明 LLM 生成的奖励能够协调“广域搜索—精确检测—安全避碰”三类行为。
+
+<a id="F005"></a>
+### 图 5. 多无人机搜索轨迹
+
+**Placed near:** p.12 S054  
+**Source:** p.12 C007
+
+![Multi-UAV search trajectories](assets/fig5.png)
+
+**Original caption:** Fig. 5: Multi-UAV search trajectories.
+
+**中文图注:** 图 5：多无人机搜索轨迹。圆、三角形和立方体分别表示 UAV、动态目标和静态障碍物。
+
+<a id="S055"></a>
+**Source:** pp.12–13 S055
+
+**Original:** Figs. 6 and 7 compare target-search efficiency. Only LLM-MAPPO and EUREKA reach 100% success, but LLM-MAPPO completes the mission 57.6% earlier than EUREKA. Relative to algorithms that fail to find every dynamic target, LLM-MAPPO reduces recorded search time by 71.4%. AMAPPO reaches 87%, SAMARL 60%, and Handcraft 93%. MDPS finds no dynamic target, whereas adding DPES raises success to 47%, demonstrating that spatiotemporal pheromones reduce response lag to moving targets.
+
+**中文:** 图 6 和图 7 比较动态目标搜索效率。只有 LLM-MAPPO 与 EUREKA 达到 100% 搜索成功率，但 LLM-MAPPO 比 EUREKA 提前 57.6% 完成任务。与未能找到全部动态目标的算法相比，LLM-MAPPO 的记录搜索时间缩短 71.4%。AMAPPO、SAMARL 和 Handcraft 的成功率分别为 87%、60% 和 93%。MDPS 未找到任何动态目标，而加入 DPES 后的 MDPS-improved 将成功率提高到 47%，说明量化目标时空分布及感知信息时效性的双模式信息素能够缓解对移动目标响应滞后的问题。
+
+<a id="F006"></a>
+### 图 6. LLM-MAPPO 的目标搜索效率
+
+**Placed near:** p.12 S055  
+**Source:** p.12 C008
+
+![Target search efficiency of LLM-MAPPO](assets/fig6.png)
+
+**Original caption:** Fig. 6: Target search efficiency of LLM-MAPPO.
+
+**中文图注:** 图 6：LLM-MAPPO 的目标搜索效率。
+
+<a id="F007"></a>
+### 图 7. 不同算法的目标搜索效率
+
+**Placed near:** p.13 S055  
+**Source:** p.13 C009
+
+![Target search efficiency under different algorithms](assets/fig7.png)
+
+**Original caption:** Fig. 7: Target search efficiency under different compared algorithms.
+
+**中文图注:** 图 7：不同对比算法下的目标搜索效率。
+
+<a id="S056"></a>
+**Source:** pp.13–14 S056
+
+**Original:** Six missions vary UAV count (5, 7, 9) and target count (15, 20). Across eight seeds, LLM-MAPPO achieves the largest number of searched targets, the lowest average area uncertainty, and the smallest fluctuations in every scenario. In “9u20t”, it finds all targets and reduces average uncertainty 92.2% more than MDPS-improved. Increasing UAVs from five to seven in the 15-target missions improves performance and reduces uncertainty by 81.0%, showing effective use of additional search resources.
+
+**中文:** 为评估搜索性能和可扩展性，实验设置 UAV 数为 5、7、9，目标数为 15、20，共六种任务，并报告 8 个随机种子的均值和标准差。LLM-MAPPO 在所有场景中均取得最大已搜索目标数、最低区域平均不确定度和最小跨种子波动。在具有挑战性的“9u20t”场景中，它成功找到全部动态目标，区域平均不确定度的降低幅度比 MDPS-improved 高 92.2%。在 15 个目标的任务中，将 UAV 数从 5 增至 7 后，LLM-MAPPO 进一步提高搜索性能并将区域平均不确定度降低 81.0%，表明它能有效利用新增搜索资源。
+
+<a id="F008"></a>
+### 图 8. 六种任务上的可扩展性比较
+
+**Placed near:** p.13 S056  
+**Source:** p.13 C010
+
+![Scalability comparison](assets/fig8.png)
+
+**Original caption:** Fig. 8: Scalability comparison on “5u15t”, “7u15t”, “9u15t”, “5u20t”, “7u20t”, and “9u20t” missions.
+
+**中文图注:** 图 8：LLM-MAPPO 与对比算法在六种搜索任务上的可扩展性比较；“5u15t”表示 5 架 UAV 搜索 15 个目标，其余命名同理。
+
+<a id="S057"></a>
+**Source:** p.14 S057
+
+**Original:** Larger scenarios extend to 15 UAVs and 30, 40, or 50 targets. LLM-MAPPO finds all targets in “15u30t”, “15u40t”, and “15u50t” while reducing average area uncertainty to nearly zero, indicating strong scalability in larger multi-UAV dynamic-target missions.
+
+**中文:** 更大规模实验进一步扩展至 15 架 UAV 和 30、40、50 个目标。在“15u30t”“15u40t”和“15u50t”中，LLM-MAPPO 均搜索到全部目标，并把区域平均不确定度降至接近 0，说明该方法在大规模多 UAV 动态目标搜索任务中仍保持较高搜索效率和良好可扩展性。
+
+<a id="F009"></a>
+### 图 9. LLM-MAPPO 可扩展性分析
+
+**Placed near:** p.14 S057  
+**Source:** p.14 C011
+
+![Scalability analysis](assets/fig9.png)
+
+**Original caption:** Fig. 9: Scalability analysis of LLM-MAPPO.
+
+**中文图注:** 图 9：LLM-MAPPO 的可扩展性分析。
+
+<a id="S058"></a>
+**Source:** p.14 S058
+
+**Original:** Ablation results in Fig. 10 show that LLM-MAPPO, LLM-MAPPO-OI, and LLM-MAPPO-OG all outperform original MAPPO, confirming that LRS mitigates sparse rewards with dense mission-oriented signals. However, OI and OG are consistently inferior to full LLM-MAPPO. Without iterative optimization, OI cannot correct hallucination-induced bias in the initial reward. Without reasoning guidance, OG may underweight target-search priority and cooperative dispersion. Thus both objective-based iterative selection and reasoning guidance contribute to the final policy.
+
+**中文:** 图 10 的消融实验表明，LLM-MAPPO、LLM-MAPPO-OI 和 LLM-MAPPO-OG 均优于原始 MAPPO，说明 LRS 通过稠密、面向任务的奖励信号有效缓解稀疏奖励问题。但 OI 和 OG 在所有场景中的已搜索目标数和区域平均不确定度均不及完整 LLM-MAPPO。缺少迭代优化时，OI 无法有效纠正初始 LLM 奖励中由幻觉导致的偏差；缺少推理指导时，OG 可能低估目标搜索优先级以及 UAV 间协同分散等关键因素。因此，基于原始目标的迭代评估选择和推理指导提示都对最终策略质量有贡献。
+
+<a id="F010"></a>
+### 图 10. LLM-MAPPO 消融实验
+
+**Placed near:** p.14 S058  
+**Source:** p.14 C012
+
+![Ablation study](assets/fig10.png)
+
+**Original caption:** Fig. 10: Ablation study of LLM-MAPPO with LLM-MAPPO-OI, LLM-MAPPO-OG, and MAPPO on six search missions.
+
+**中文图注:** 图 10：LLM-MAPPO、LLM-MAPPO-OI、LLM-MAPPO-OG 与 MAPPO 在六种搜索任务上的消融实验。
+
+<a id="S059"></a>
+**Source:** p.14 S059
+
+**Original:** Overall, the improvement does not come from one component alone, but from coordinated integration of LLM reward generation, prompt-based reasoning guidance, training-free iterative optimization, pheromone-based search guidance, and MAPPO policy learning.
+
+**中文:** 总体而言，LLM-MAPPO 的性能提升并非来自某一个孤立组件，而是 LLM 奖励生成、基于提示的推理指导、无需训练的迭代优化、基于信息素的搜索引导以及 MAPPO 策略学习协同作用的结果。
+
+<a id="S060"></a>
+## VI. 结论 / Conclusion
+
+**Source:** p.14 S060
+
+**Original:** This paper investigated cooperative multi-UAV trajectory planning for dynamic target search. To address sparse rewards in MARL, an LRS scheme with initialization and iterative optimization guides agents to rapidly learn policies aligned with mission objectives. To address target spatiotemporal dynamics, DPES enables prompt response to position changes. LLM-MAPPO combines LLM semantic reasoning with MAPPO online decision making. Experiments show significant gains in searched-target count and average-area-uncertainty reduction, while guaranteeing collision avoidance and exhibiting excellent scalability.
+
+**中文:** 本文研究了动态目标搜索中的多 UAV 协同轨迹规划问题。针对 MARL 方法的稀疏奖励问题，本文设计由初始化与迭代优化构成的 LRS 方案，引导 UAV 智能体迅速学习与搜索任务目标一致的轨迹规划策略；针对目标的时空动态性，本文提出 DPES，使 UAV 能够及时响应目标位置变化并提高搜索效率。在此基础上，LLM-MAPPO 将 LLM 的语义推理能力与 MAPPO 的在线决策能力相融合，实现高效的多 UAV 动态目标搜索。实验表明，该算法显著提高已搜索目标数并降低区域平均不确定度，同时保证 UAV 避碰且具有良好可扩展性。
+
+---
+
+<a id="S061"></a>
+## 附录：提示模板与 LLM 生成奖励函数
+
+**Source:** p.15 S061
+
+**Original:** The prompt template used in the proposed LLM reward shaping scheme is presented in Fig. 11.
+
+**中文:** 所提出 LLM 奖励塑形方案使用的提示模板见图 11。
+
+<a id="F011"></a>
+### 图 11. 提示模板
+
+**Placed near:** p.15 S061  
+**Source:** p.15 C013
+
+![Prompt template](assets/fig11.png)
+
+**Original caption:** Fig. 11: Prompt template.
+
+**中文图注:** 图 11：提示模板。模板依次提供任务描述、系统模型、推理指导、奖励函数接口和输出约束。
+
+<a id="S062"></a>
+**Source:** p.15 S062
+
+**Original:** The number of LRS iterations is $K=5$. At iteration $k$, the LLM generates candidate reward $R_k$, whose immediate value at time $t$ is $R_k(t)$. The paper presents $R_1$, $R_3$, and final $R^{best}$. Common objective-related components include the number of successfully searched targets $N^{sear}(t)$, the number of grids whose uncertainty crosses below threshold $N^{unc}(t)$, global uncertainty $U(t)=I\chi^{area}(t)$, and one-step uncertainty reduction $\Delta U(t)$.
+
+**中文:** LRS 迭代次数设为 $K=5$。在第 $k$ 次迭代中，LLM 生成候选奖励函数 $R_k$，其在时间步 $t$ 的即时奖励记为 $R_k(t)$。论文展示了 $R_1$、$R_3$ 和最终选中的 $R^{best}$。常用的任务目标相关分量包括：成功搜索目标数 $N^{sear}(t)$、不确定度在当前时间步降至阈值以下的网格数 $N^{unc}(t)$、全局环境不确定度 $U(t)=I\chi^{area}(t)$，以及单步不确定度下降量 $\Delta U(t)$。
+
+<a id="S063"></a>
+**Source:** p.15 S063
+
+**Original:** The shaping terms include maximum target probability within each UAV sensing domain, ascent/descent indicators, indicators for whether a sensed region contains a target or high-probability grid, sensor-aware altitude rewards, and inter-UAV dispersion rewards. $R_1$ covers target search, uncertainty reduction, altitude adaptation, and separation. $R_3$ emphasizes target confirmation and more explicitly penalizes insufficient separation. The selected $R^{best}$ further prioritizes target search, combines threshold-based and continuous uncertainty reduction, and promotes cooperation.
+
+**中文:** 奖励塑形项包括：各 UAV 感知域内的最大目标存在概率、上升/下降动作指示量、感知域内是否存在目标或高概率网格的指示量、考虑传感器特性的高度奖励，以及 UAV 间分散奖励。$R_1$ 提供覆盖目标搜索、不确定度降低、高度自适应和 UAV 间分离的基础结构；$R_3$ 更强调目标确认，并更明确地惩罚 UAV 间距离不足；最终的 $R^{best}$ 进一步提高目标搜索的优先级，同时结合阈值式与连续式不确定度降低，并促进 UAV 协作。这说明 LLM 能够生成结构和侧重点不同的多样化奖励函数。
+
+<a id="S064"></a>
+### 可解释性分析 / Interpretability Analysis
+
+**Source:** pp.15–16 S064
+
+**Original:** The final dense reward can be mapped to the optimization problem: the searched-target term corresponds to the first term of Eq. (12a); uncertainty-crossing and continuous reduction terms correspond to the uncertainty objective; altitude shaping reflects the sensor trade-off in Eqs. (12g–i); and dispersion shaping supports collision avoidance in Eq. (12d). Thus the dense reward preserves the mission objective while providing stepwise learning feedback.
+
+**中文:** 最终稠密奖励可逐项映射回原始优化问题：已搜索目标奖励对应公式 (12a) 的第一项；不确定度跨阈值和连续下降奖励对应区域不确定度目标；高度塑形反映公式 (12g–i) 中感知范围、检测概率和虚警概率之间的权衡；UAV 分散塑形则支持公式 (12d) 的避碰约束。因此，该稠密奖励在保持任务目标一致性的同时，为策略学习提供了逐时间步反馈。
+
+---
+
+## 参考文献 / References
+
+参考文献条目保留原英文书目信息，见原论文 pp.16–17；为避免改动作者名、题名、卷期页码和 DOI，本 Reader 不翻译书目字段。原始页面可在 [`assets/pages/page-16.png`](assets/pages/page-16.png) 与 [`assets/pages/page-17.png`](assets/pages/page-17.png) 中核对。
+
+---
+
+## 作者简介 / Author Biographies
+
+<a id="S065"></a>
+**Source:** p.16 S065
+
+**Original:** Yifei Liu received the M.S. degree from National University of Defense Technology, China, in 2024, where she is currently pursuing the Ph.D. degree. Her research interests include UAV intelligent decision-making and deep reinforcement learning.
+
+**中文:** 刘一菲于 2024 年获中国国防科技大学硕士学位，目前正在该校攻读博士学位。她的研究兴趣包括 UAV 智能决策与深度强化学习。
+
+<a id="S066"></a>
+**Source:** p.17 S066
+
+**Original:** Xiaoshuai Li received the Ph.D. degree from the Harbin Institute of Technology, China. She is currently an Associate Professor at National University of Defense Technology. Her research interests focus on UAV swarms, swarm intelligence, and resource allocation.
+
+**中文:** 李晓帅获中国哈尔滨工业大学博士学位，现任国防科技大学副教授。她的研究兴趣主要包括无人机集群、群体智能与资源分配。
+
+<a id="S067"></a>
+**Source:** p.17 S067
+
+**Original:** Xiaoping Jiang received the Ph.D. degree from the University of Nottingham, UK. He is currently an Associate Professor at National University of Defense Technology. His research interests lie in operations research and computer science, including applications of optimization in electronic engineering and mission planning.
+
+**中文:** 姜晓平获英国诺丁汉大学博士学位，现任国防科技大学副教授。他的研究兴趣涵盖运筹学与计算机科学，包括优化方法在电子工程和任务规划中的应用。
+
+<a id="S068"></a>
+**Source:** p.17 S068
+
+**Original:** Hui Liu received the Ph.D. degree from the Electronic Engineering Institute, China, in 2011. He is currently an Associate Professor at National University of Defense Technology. His research interests include communication countermeasures and intelligent information processing.
+
+**中文:** 刘辉于 2011 年获中国电子工程学院博士学位，现任国防科技大学副教授。他的研究兴趣包括通信对抗与智能信息处理。
+
+<a id="S069"></a>
+**Source:** p.17 S069
+
+**Original:** Junan Yang received the B.E. degree in radio technology from Southeast University, China, in 1986, the M.E. degree in communication and information systems from the Electronic Engineering Institute, China, in 1991, and the Ph.D. degree in signal and information processing from the University of Science and Technology of China, in 2003. He is currently a Professor at National University of Defense Technology. His research interests include UAV-assisted wireless networks, neural computing, and computer vision.
+
+**中文:** 杨俊安于 1986 年获中国东南大学无线电技术学士学位，1991 年获中国电子工程学院通信与信息系统硕士学位，2003 年获中国科学技术大学信号与信息处理博士学位。他现任国防科技大学教授，研究兴趣包括 UAV 辅助无线网络、神经计算与计算机视觉。
+
+---
