@@ -56,6 +56,9 @@ htmlcov/
 # ===== 本地 Claude Code 配置（可能含本地密钥）=====
 .claude/
 
+# ===== WorkBuddy 本地数据（记忆/状态，不提交）=====
+.workbuddy/
+
 # ===== 系统 =====
 .DS_Store
 Thumbs.db

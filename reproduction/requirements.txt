@@ -1,0 +1,4 @@
+numpy
+matplotlib
+# torch 需要 GPU 版，用 conda 或 pip 单独装（见 README），不要装 CPU 版
+# torch>=2.0
