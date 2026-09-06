@@ -369,7 +369,87 @@ export DEEPSEEK_API_KEY='sk-...'
 
 ---
 
-## 五、故意简化的地方
+## 五、M9/M10 R1 真接 train_batched 跑通 (2026-09-06)
+
+在 M9 (batched env 加速) + M10 (8-seed 本地闭环) 基础上, 用 **真 DeepSeek-R1 当 LRS 后端** 跑了一次完整的 train_batched.py:
+
+```bash
+DEEPSEEK_API_KEY="sk-..." \
+    python reproduction/train_batched.py \
+    --batch-envs 16 --total-episodes 150 \
+    --use-dpes --use-lrs --llm-backend deepseek-r1 --lrs-K 5 \
+    --device cuda --log-every 1 \
+    --out-name training_curve_batched_m5_R1_150.png \
+    --save-history batched_m5_R1_150.npz
+```
+
+### LRS K=5 真跑 (R1 真思考, 2026-09-06 后台 task `EF7e2a`)
+
+```
+[LRS k=1/5] compile FAILED (SyntaxError: '(' was never closed line 43); skipping
+[LRS k=2/5] J=+1.017  searched=   2  area_unc=0.9825  |  best so far J=+1.017
+[LRS k=3/5] J=+8.150  searched=   9  area_unc=0.8501  |  best so far J=+8.150 (R^best)
+[LRS k=4/5] J=+4.197  searched=   5  area_unc=0.8027  |  best so far J=+8.150
+[LRS k=5/5] J=+5.188  searched=   6  area_unc=0.8116  |  best so far J=+8.150
+[lrs] done in 1372.0s, R^best J=+8.150, area_unc=0.8501, searched=9
+```
+
+- **R_1 编译失败 (R1 thinking 时括号没闭合)** —— `compile_reward` 三级降级也救不了语法错误, 但 `try/except` 跳过后继续跑。 R1 真输出有时 syntax 不合法, 这是工程现实。
+- **R^best = R_3 (J=+8.150)** —— 论文 §IV-B 说 LRS 选 J 最大的 R_k。 这次 run 里 R^best 来自第 3 次迭代。
+
+### R1 设计的 R^best 跟 paper-published 的形态差异
+
+R1 写的 `reward()` 函数特征 (用 task `EF7e2a` 这次 run 的 R_3 输出作参考; 早期 task `4unaee` run 的 R_2 在 `lrs_runs/R1_K5_seed42_Rbest_fig11.py` 115 行存档, 形态类似):
+
+| 元素 | Canned (paper-published) | R1 (真设计) |
+|---|---|---|
+| 行数 | ~50 行 | ~115 行 (2× 长) |
+| 系数选择 | 温和 (0.1 ~ 1.0) | **激进 (12.0 × target_value)** |
+| 惩罚项 | -1 ~ -10 | -30 (硬约束) |
+| 高度自适应 | 简单 `1 / (1 + h)` | 多尺度 `R = 1 + nh`, det_factor 分层 |
+| 周边格子遍历 | (公式 11 的 footprint) | **手工展开 5×5 双重 for 循环** |
+
+→ **R1 不是抄 paper 的 R^best**, 是真按 prompt 5 段式要求自己设计。 工程形态完全不同。
+
+### MAPPO 训练曲线对比 (R1 vs Canned)
+
+| 指标 | R1 (真 LLM) | Canned (paper 占位) |
+|---|---|---|
+| 总耗时 | 1473.4s | 175s |
+| 起点 reward (mean over 16 envs) | **-7182.3** | +107.9 |
+| 终点 reward | -3222.4 | +374.1 |
+| 起点 area_unc | 0.442 | 0.425 |
+| **终点 area_unc** | **0.00003 (搜完所有目标!)** | 0.082 (剩 8%) |
+| reward 量级 | -7000 ~ -3000 (激进 scale) | -200 ~ +400 (温和 scale) |
+
+**关键观察**:
+
+1. **R1 真设计 ≠ 抄 paper**: R1 设计的 R^best scale 大约是 Canned 的 30-50× (R1 用 `12.0 × target_value` 等大系数), 导致训练时 reward 是 -7000 量级 vs Canned -200 量级。 这是**真 LLM 推理的证据**, 不是凑数。
+2. **R1 终点 area_unc 推到 0.00003** (彻底搜完所有目标), Canned 推到 0.082 (剩 8%)。 **R1 设计的奖励信号对"搜完目标"这件事的引导更强烈**。
+3. **R1 训练曲线还在抖** (-7182 → -3222 持续上升, 没收敛到稳态), Canned 已经稳态 (+107 → +374)。 **R1 真设计的 R^best 需要更多 ep 收敛** (论文 30k ep, 我们 150 ep)。
+4. **3 级降级编译 + try/except 救命**: R_1 SyntaxError 被接住跳过, R_2~R_5 继续跑。 没有这两个工程机制, 一次失败就崩整个 LRS 主循环。
+
+### 这次跑证实
+
+- ✅ **LLM 后端是真 DeepSeek-Reasoner** (不是 CannedLLM 占位)
+- ✅ **LLM 设计的奖励函数被 MAPPO 实际使用训练** (整条数据流都过 L1 真输出)
+- ✅ **LRS 算法机制对** (K=5 选最优 R^best, scale / 系数 / 结构合理)
+- ✅ **3 级降级编译 + try/except 工程机制验证有效** (R_1 失败不崩主循环)
+- ⚠️ **150 ep 不够让 R1 收敛**: reward 仍在爬升, 论文 30k ep 应能稳态
+
+### 文件清单
+
+| 路径 | 内容 |
+|---|---|
+| `reproduction/lrs_runs/R1_K5_seed42_Rbest_fig11.py` | **早期 task `4unaee` run** 的 R1 R^best 完整代码 (115 行, J=+19.557) |
+| `reproduction/lrs_runs/R1_K5_seed42_log_fig11.txt` | 早期 task `4unaee` LRS K=5 完整迭代日志 (J=+19.557) |
+| `batched_m5_R1_150.npz` | **M11 task `EF7e2a` run** 训练历史 (9 outer × 16 envs, R1 后端 J=+8.150) |
+| `reproduction/training_curve_batched_m5_R1_150.png` | M11 R1 训练曲线图 |
+| `comparison_R1_vs_Canned_M5_150.png` | R1 vs Canned 三联对比图 (M11 出) |
+
+---
+
+## 六、故意简化的地方
 
 | 简化 | 现在 | 升级时 |
 |---|---|---|
