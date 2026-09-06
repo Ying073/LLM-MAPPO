@@ -278,14 +278,19 @@ def train(args):
     axes[2].set_xlabel("outer iteration"); axes[2].set_ylabel("area uncertainty")
     axes[2].set_title("Area uncertainty (lower = better)"); axes[2].grid(True, alpha=0.3)
     plt.tight_layout()
-    out = os.path.join(HERE, args.out_name)
+    # M12 fix: --out-name 有时传带目录的相对路径 (reproduction/m12_results/x.png) 或绝对路径,
+    # 旧代码 os.path.join(HERE, ...) 会强制把相对路径再拼到 reproduction/ 后面 → 双重前缀 → 目录不存在。
+    # 改为与 --save-history (npz) 同一套解析: 一律相对当前工作目录(项目根)或绝对路径, 并自动建父目录。
+    out = os.path.normpath(args.out_name)
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     plt.savefig(out, dpi=120)
     print(f"\n[train] saved training curve to: {out}")
     print(f"[train] final stats: reward={rewards_hist[-1]:+.3f} "
           f"searched={searched_hist[-1]} area_unc={au_hist[-1]:.4f}")
 
     if args.save_history:
-        hist_path = args.save_history if args.save_history.endswith(".npz") else args.save_history + ".npz"
+        hist_path = os.path.normpath(args.save_history if args.save_history.endswith(".npz") else args.save_history + ".npz")
+        os.makedirs(os.path.dirname(hist_path) or ".", exist_ok=True)
         save_kwargs = dict(
             rewards=np.asarray(rewards_hist, dtype=np.float32),
             searched=np.asarray(searched_hist, dtype=np.float32),
