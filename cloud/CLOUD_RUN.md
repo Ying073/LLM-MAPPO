@@ -9,6 +9,23 @@
 
 ---
 
+## 操作清单 (5 步直接抄)
+
+| 步骤 | 在哪 | 命令 (复制粘贴) | 耗时 |
+|---|---|---|---|
+| **①** | **本地 (PowerShell/WSL)** | `bash cloud/upload_to_cloud.sh root@connect.bj1.autodl.com:24022 llm_mappo`<br>把 `<user@host:port>` 换成你租机后给的 SSH 信息 | < 1 min (40MB) |
+| **②** | **云端 SSH** | 见 §二 step 2 的 `pip install torch` (CUDA) + `pip install numpy matplotlib` | 5–8 min |
+| **③** | **云端 SSH** | `cd /root/llm_mappo && bash cloud/cloud_run.sh` | **~3.6 h** |
+| **④** | **本地** | `bash cloud/download_from_cloud.sh root@connect.bj1.autodl.com:24022 llm_mappo` | < 1 min |
+| **⑤** | **本地** | 见 §六 step 3: 用 `reproduction/plot_8seed.py` 出图 + 写报告 | 5 min |
+
+**⚠ 诚实风险提示**：当前 `train_batched.py` **没有 checkpoint/resume**。
+- 跑到第 4 个 seed 时如果断电/出 bug,前 3 个 seed 没事,但**第 4-8 seed 全丢**。
+- 补救: `bash cloud/cloud_run.sh` 不会自动跳过已跑完的 seed——**手动**改 `cloud_run.sh` 里的 `for i in 0 1 2 3 4 5 6 7` 为 `for i in 3 4 5 6 7`(从第 4 个 seed 重跑)。
+- 单 seed ~27 min,补 8 seed 全重也只要 ~3.6 h,**最坏情况再付一份 ~¥7**,不会血本无归。
+
+---
+
 ## 一、跑什么、跑多久、多少钱（请你先对齐再下单）
 
 | 项 | 值 |
