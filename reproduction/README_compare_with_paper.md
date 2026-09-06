@@ -4,7 +4,7 @@
 
 旧实验不能作为论文复现结果：旧环境会丢失动态目标实体，批量 reset 会泄漏 belief state，MAPPO 使用了共享 Actor 和错误超参数，奖励及测试 seed 的解释也与论文不一致。相关数据保留用于追溯，但新版报告不得引用其绝对指标。
 
-新版已按论文正文、Algorithm 3、表 I/II 与附录 Eq. (34) 修正核心执行链，并通过 AutoDL CUDA smoke。首轮 3,000-episode pilot 暴露出 Eq. (34) 间距项的奖励投机，现已修正；尚待重新运行 pilot 和 28,000-episode 正式训练验证。
+新版已按论文正文、Algorithm 3、表 I/II 与附录 Eq. (34) 修正核心执行链，并通过 AutoDL CUDA smoke。首轮 3,000-episode pilot 暴露出 Eq. (34) 间距项的奖励投机；修正后 pilot 的 8-seed 成功率为 91.67%，全部无碰撞。尚待 28,000-episode 正式训练验证。
 
 ## 已对齐
 
@@ -43,5 +43,7 @@
 - GPU smoke：只验证 CUDA、形状、反向更新、保存 checkpoint 与加载评测。
 - Pilot：3,000 episodes；用于查数值稳定性和趋势，不用于论文最终数字。
 - Formal：28,000 episodes；训练完成后冻结策略，在 seeds 0–7 上测试并报告 mean±std。
+
+正式训练每 50 个 outer iteration 原子保存一次完整训练状态，包括模型、优化器、环境、历史与 NumPy/PyTorch/CUDA 随机数流；可通过 `RESUME_FROM` 和原 `RUN_DIR` 继续，不必从头训练。
 
 所有新结果写入 `reproduction/paper_aligned_runs/` 的唯一时间戳目录，避免覆盖旧实验。

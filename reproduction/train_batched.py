@@ -41,6 +41,23 @@ def compute_n_outer(total_episodes: int, n_envs: int) -> int:
     return math.ceil(total_episodes / n_envs)
 
 
+def capture_rng_state():
+    state = {
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state):
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"].cpu())
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all([rng_state.cpu() for rng_state in state["cuda"]])
+
+
 def load_lrs_cache(cache_path: str):
     """[M12] 加载 LRS 离线产出的 R^best.py 文件, 跳过 8 次重复跑 LRS K=5.
 
@@ -96,6 +113,12 @@ def parse_args():
     p.add_argument("--save-history", type=str, default=None)
     p.add_argument("--minibatch-size", type=int, default=256)
     p.add_argument("--checkpoint-out", type=str, default=None)
+    p.add_argument("--training-checkpoint", type=str, default=None,
+                   help="定期覆盖写入的完整训练状态（用于断点续训）")
+    p.add_argument("--checkpoint-every", type=int, default=0,
+                   help="每多少个 outer iteration 保存完整训练状态；0 表示关闭")
+    p.add_argument("--resume-from", type=str, default=None,
+                   help="从 --training-checkpoint 生成的完整训练状态继续")
     return p.parse_args()
 
 
@@ -178,7 +201,54 @@ def train(args):
     n_outer = compute_n_outer(args.total_episodes, n_envs)
     print(f"[init] total_episodes={args.total_episodes} ÷ n_envs={n_envs} → n_outer={n_outer} 个外迭代")
 
-    for outer in range(n_outer):
+    start_outer = 0
+    if args.resume_from:
+        mappo, progress = MAPPO.from_training_checkpoint(args.resume_from, device=args.device)
+        saved_config = progress["run_config"]
+        current_config = {
+            "n_envs": n_envs,
+            "use_batched": use_batched,
+            "use_dpes": args.use_dpes,
+            "reward_source": args.reward_source,
+            "seed": args.seed,
+            "rollout_len": args.rollout_len,
+            "obs_dim": obs_dim,
+            "global_dim": global_dim,
+        }
+        mismatches = {
+            key: (saved_config.get(key), value)
+            for key, value in current_config.items()
+            if saved_config.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(f"resume configuration mismatch: {mismatches}")
+        start_outer = int(progress["next_outer"])
+        if start_outer > n_outer:
+            raise ValueError(f"checkpoint outer {start_outer} exceeds requested total {n_outer}")
+        env = progress["env"]
+        if use_batched:
+            obs_batch = progress["observations"]
+        else:
+            obs_list = progress["observations"]
+        histories = progress["histories"]
+        rewards_hist = list(histories["rewards"])
+        searched_hist = list(histories["searched"])
+        au_hist = list(histories["au"])
+        actor_loss_hist = list(histories["actor_loss"])
+        critic_loss_hist = list(histories["critic_loss"])
+        rewards_per_env = list(histories["rewards_per_env"])
+        searched_per_env = list(histories["searched_per_env"])
+        au_per_env = list(histories["au_per_env"])
+        restore_rng_state(progress["rng_state"])
+        print(f"[resume] loaded {args.resume_from}; continuing at outer {start_outer + 1}/{n_outer}",
+              flush=True)
+
+    if args.checkpoint_every < 0:
+        raise ValueError("--checkpoint-every must be non-negative")
+    if args.checkpoint_every and not args.training_checkpoint:
+        raise ValueError("--checkpoint-every requires --training-checkpoint")
+
+    for outer in range(start_outer, n_outer):
         buffer.reset()
         ep_reward = np.zeros(n_envs, dtype=np.float32)
         ep_searched = np.zeros(n_envs, dtype=np.int32)
@@ -278,6 +348,39 @@ def train(args):
         # 下一外迭代: reset (单 env) / 保留 (batched, partial reset 已 done)
         if not use_batched:
             obs_list = env.reset()
+
+        if args.checkpoint_every and (outer + 1) % args.checkpoint_every == 0:
+            checkpoint_path = os.path.abspath(args.training_checkpoint)
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            progress = {
+                "next_outer": outer + 1,
+                "run_config": {
+                    "n_envs": n_envs,
+                    "use_batched": use_batched,
+                    "use_dpes": args.use_dpes,
+                    "reward_source": args.reward_source,
+                    "seed": args.seed,
+                    "rollout_len": args.rollout_len,
+                    "obs_dim": obs_dim,
+                    "global_dim": global_dim,
+                },
+                "env": env,
+                "observations": obs_batch if use_batched else obs_list,
+                "histories": {
+                    "rewards": rewards_hist,
+                    "searched": searched_hist,
+                    "au": au_hist,
+                    "actor_loss": actor_loss_hist,
+                    "critic_loss": critic_loss_hist,
+                    "rewards_per_env": rewards_per_env,
+                    "searched_per_env": searched_per_env,
+                    "au_per_env": au_per_env,
+                },
+                "rng_state": capture_rng_state(),
+            }
+            mappo.save_training_checkpoint(checkpoint_path, progress)
+            print(f"[checkpoint] saved resumable state at outer {outer + 1}: {checkpoint_path}",
+                  flush=True)
 
     # 画训练曲线
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))

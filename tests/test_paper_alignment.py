@@ -173,6 +173,30 @@ class MAPPONetworkPaperAlignmentTests(unittest.TestCase):
             actual, _ = restored.select_actions(obs, masks, deterministic=True)
         np.testing.assert_array_equal(actual, expected)
 
+    def test_training_checkpoint_restores_optimizer_and_progress(self):
+        algo = MAPPO(obs_dim=8, global_dim=56, n_agents=N_UAV, device="cpu")
+        for opt, module in [
+            *zip(algo.actor_opts, algo.actors),
+            (algo.critic_opt, algo.critic),
+        ]:
+            opt.zero_grad()
+            sum(parameter.sum() for parameter in module.parameters()).backward()
+            opt.step()
+
+        progress = {"next_outer": 3, "rewards_hist": [1.0, 2.0, 3.0]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "training_state.pt"
+            algo.save_training_checkpoint(path, progress)
+            restored, restored_progress = MAPPO.from_training_checkpoint(path, device="cpu")
+
+            self.assertFalse((Path(tmp) / "training_state.pt.tmp").exists())
+
+        self.assertEqual(restored_progress, progress)
+        self.assertTrue(restored.actor_opts[0].state)
+        self.assertTrue(restored.critic_opt.state)
+        for expected, actual in zip(algo.actors[0].parameters(), restored.actors[0].parameters()):
+            torch.testing.assert_close(actual, expected)
+
 
 class PaperRewardTests(unittest.TestCase):
     def test_dispersion_term_does_not_reward_separation_beyond_safe_distance(self):
@@ -300,6 +324,35 @@ class DPESPaperAlignmentTests(unittest.TestCase):
 
 
 class BatchedTrainingProtocolTests(unittest.TestCase):
+    def test_resume_rng_state_replays_numpy_and_torch_streams(self):
+        from reproduction.train_batched import capture_rng_state, restore_rng_state
+
+        np.random.seed(101)
+        torch.manual_seed(101)
+        state = capture_rng_state()
+        expected_numpy = np.random.random(4)
+        expected_torch = torch.rand(4)
+
+        restore_rng_state(state)
+
+        np.testing.assert_allclose(np.random.random(4), expected_numpy)
+        torch.testing.assert_close(torch.rand(4), expected_torch)
+
+    def test_resume_moves_cuda_rng_state_to_cpu_before_restore(self):
+        from reproduction.train_batched import capture_rng_state, restore_rng_state
+
+        class DeviceState:
+            def cpu(self):
+                return "cpu-byte-state"
+
+        state = capture_rng_state()
+        state["cuda"] = [DeviceState()]
+        with patch("torch.cuda.is_available", return_value=True), \
+                patch("torch.cuda.set_rng_state_all") as set_rng_state_all:
+            restore_rng_state(state)
+
+        set_rng_state_all.assert_called_once_with(["cpu-byte-state"])
+
     def test_requested_episode_count_rounds_up(self):
         from reproduction.train_batched import compute_n_outer
 

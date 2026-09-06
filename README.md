@@ -6,7 +6,7 @@
 
 代码已完成一次论文逐式审计和核心修正：动态目标以实体身份连续移动且数量保持 15；观测按 Eq. (18) 组织；7 架 UAV 使用独立 Actor 与集中式 Critic；非法动作在采样 logits 上屏蔽；DPES 按 Eq. (13)–(17) 更新；默认奖励采用附录 Eq. (34)；训练 transition 保存动作前的全局状态；测试阶段冻结策略并运行 8 个独立环境种子。
 
-新版已在 AutoDL RTX 4090D 上通过 2 个并行环境、每个 5 步的 CUDA smoke，并完成 checkpoint 保存/加载及固定策略评测。下一阶段是 3,000 episode pilot；论文规模训练为 28,000 episode。旧 smoke 来自旧实现，不能视为论文复现结果。
+新版已在 AutoDL RTX 4090D 上通过 CUDA smoke、断点续训 smoke 和修正奖励后的 3,000-episode pilot；pilot 的 8-seed 固定策略成功率为 91.67%，全部无碰撞。下一阶段是论文规模的 28,000-episode 正式训练。旧 smoke、旧 pilot 不能视为论文复现结果。
 
 ## 目录
 

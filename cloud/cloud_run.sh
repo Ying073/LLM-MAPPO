@@ -12,6 +12,9 @@ TRAIN_SEED="${TRAIN_SEED:-0}"
 BATCH_ENVS="${BATCH_ENVS:-20}"
 DEVICE="${DEVICE:-cuda}"
 PY="${PY:-/root/mappo_venv/bin/python}"
+CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-50}"
+RESUME_FROM="${RESUME_FROM:-}"
+CODE_VERSION="${CODE_VERSION:-unknown}"
 
 case "${RUN_KIND}" in
   pilot)  TRAIN_EPISODES="${TRAIN_EPISODES:-3000}" ;;
@@ -30,12 +33,31 @@ fi
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${RUN_DIR:-reproduction/paper_aligned_runs/${RUN_KIND}_seed${TRAIN_SEED}_${STAMP}}"
-mkdir "${RUN_DIR}"
+TEE_OPTION=""
+if [[ -n "${RESUME_FROM}" ]]; then
+  [[ -f "${RESUME_FROM}" ]] || { echo "Resume checkpoint not found: ${RESUME_FROM}" >&2; exit 1; }
+  mkdir -p "${RUN_DIR}"
+  TEE_OPTION="-a"
+else
+  mkdir "${RUN_DIR}"
+fi
 
 echo "Paper-aligned ${RUN_KIND} run"
 echo "project=${PROJECT_ROOT}"
 echo "episodes=${TRAIN_EPISODES}, batch_envs=${BATCH_ENVS}, train_seed=${TRAIN_SEED}"
 echo "artifacts=${RUN_DIR}"
+echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
+
+{
+  echo "code_version=${CODE_VERSION}"
+  echo "run_kind=${RUN_KIND}"
+  echo "episodes=${TRAIN_EPISODES}"
+  echo "batch_envs=${BATCH_ENVS}"
+  echo "train_seed=${TRAIN_SEED}"
+  echo "device=${DEVICE}"
+  sha256sum reproduction/train_batched.py reproduction/algorithms/mappo.py \
+    reproduction/reward/paper_reward.py cloud/cloud_run.sh
+} > "${RUN_DIR}/run_manifest.txt"
 
 "${PY}" - <<'PY'
 import torch
@@ -43,19 +65,28 @@ assert torch.cuda.is_available(), "CUDA is unavailable in the selected Python en
 print("GPU:", torch.cuda.get_device_name(0))
 PY
 
+TRAIN_ARGS=(
+  --batch-envs "${BATCH_ENVS}"
+  --total-episodes "${TRAIN_EPISODES}"
+  --rollout-len 500
+  --seed "${TRAIN_SEED}"
+  --device "${DEVICE}"
+  --use-dpes
+  --reward-source paper-rbest
+  --out-name "${RUN_DIR}/training_curve.png"
+  --save-history "${RUN_DIR}/training_history.npz"
+  --checkpoint-out "${RUN_DIR}/policy.pt"
+  --training-checkpoint "${RUN_DIR}/training_state.pt"
+  --checkpoint-every "${CHECKPOINT_EVERY}"
+  --log-every 10
+)
+if [[ -n "${RESUME_FROM}" ]]; then
+  TRAIN_ARGS+=(--resume-from "${RESUME_FROM}")
+fi
+
 "${PY}" reproduction/train_batched.py \
-  --batch-envs "${BATCH_ENVS}" \
-  --total-episodes "${TRAIN_EPISODES}" \
-  --rollout-len 500 \
-  --seed "${TRAIN_SEED}" \
-  --device "${DEVICE}" \
-  --use-dpes \
-  --reward-source paper-rbest \
-  --out-name "${RUN_DIR}/training_curve.png" \
-  --save-history "${RUN_DIR}/training_history.npz" \
-  --checkpoint-out "${RUN_DIR}/policy.pt" \
-  --log-every 10 \
-  2>&1 | tee "${RUN_DIR}/training.log"
+  "${TRAIN_ARGS[@]}" \
+  2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/training.log"
 
 # Paper §V-A: freeze the learned policy, then test on eight independent seeds.
 "${PY}" reproduction/evaluate.py \
@@ -64,6 +95,6 @@ PY
   --device "${DEVICE}" \
   --max-steps 500 \
   --out "${RUN_DIR}/evaluation_8seeds.json" \
-  2>&1 | tee "${RUN_DIR}/evaluation.log"
+  2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/evaluation.log"
 
 echo "Completed: ${RUN_DIR}"

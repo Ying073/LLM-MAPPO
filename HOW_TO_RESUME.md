@@ -2,15 +2,15 @@
 
 ## 一句话状态
 
-论文对齐修订与 AutoDL GPU smoke 已完成。首轮 3,000-episode pilot 已发现并确认 Eq. (34) 间距项奖励投机；代码已修正，当前等待重新运行 pilot。旧版 150-episode、m12 与首轮 pilot 数据只作诊断记录，不能用于论文结论。
+论文对齐修订、AutoDL GPU/断点续训 smoke 和修正奖励后的 3,000-episode pilot 已完成；pilot 的 8-seed 成功率为 91.67%，全部无碰撞，当前准备 28,000-episode 正式训练。旧版 150-episode、m12 与首轮错误奖励 pilot 数据只作诊断记录，不能用于论文结论。
 
 ## 接手顺序
 
 1. 先读 `reproduction/README_compare_with_paper.md`，确认已对齐项和仍需声明的假设。
 2. 运行 `python -m unittest discover -s tests -p 'test_*.py' -v`。
-3. 查看已通过的 `reproduction/paper_aligned_runs/smoke_20260906_v2/`；需要改核心执行链时再做新的短 CUDA smoke。
-4. 运行 `bash cloud/cloud_run.sh`，重新完成 3,000-episode pilot。
-5. 审核 pilot 的日志、训练稳定性和 8-seed 固定策略指标，再决定是否启动 `RUN_KIND=formal` 的 28,000-episode 正式训练。
+3. 查看已通过的 `reproduction/paper_aligned_runs/pilot_seed0_rewardfix_20260906_221558/` 和 `resume_smoke_20260906_232711/`。
+4. 使用 `RUN_KIND=formal bash cloud/cloud_run.sh` 完成 28,000-episode 正式训练。
+5. 如中断，使用原 `RUN_DIR` 并令 `RESUME_FROM=${RUN_DIR}/training_state.pt` 继续；不要另起模型或覆盖其他实验目录。
 
 ## 已修正的高风险问题
 

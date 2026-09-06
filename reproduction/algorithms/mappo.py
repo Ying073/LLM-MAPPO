@@ -13,6 +13,8 @@ mappo.py —— MAPPO 训练主逻辑 (per-UAV PPO with shared critic)
     - clip ε = 0.2, γ = 0.95, λ = 0.95, lr = 2e-4
 """
 
+import os
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -194,8 +196,8 @@ class MAPPO:
 
         return float(np.mean(actor_losses)), float(np.mean(critic_losses))
 
-    def save_checkpoint(self, path):
-        torch.save({
+    def _checkpoint_payload(self):
+        return {
             "config": {
                 "obs_dim": self.obs_dim,
                 "global_dim": self.global_dim,
@@ -204,10 +206,27 @@ class MAPPO:
                 "clip_eps": self.clip_eps,
                 "gamma": self.gamma,
                 "gae_lambda": self.lam,
+                "update_epochs": self.update_epochs,
+                "minibatch_size": self.minibatch_size,
             },
             "actors": [actor.state_dict() for actor in self.actors],
             "critic": self.critic.state_dict(),
-        }, path)
+        }
+
+    def save_checkpoint(self, path):
+        torch.save(self._checkpoint_payload(), path)
+
+    def save_training_checkpoint(self, path, progress):
+        """Atomically save policy, optimizers, and caller-owned training progress."""
+        payload = self._checkpoint_payload()
+        payload.update({
+            "actor_optimizers": [opt.state_dict() for opt in self.actor_opts],
+            "critic_optimizer": self.critic_opt.state_dict(),
+            "training_progress": progress,
+        })
+        tmp_path = f"{path}.tmp"
+        torch.save(payload, tmp_path)
+        os.replace(tmp_path, path)
 
     @classmethod
     def from_checkpoint(cls, path, device="cpu"):
@@ -218,3 +237,16 @@ class MAPPO:
             actor.load_state_dict(state)
         algo.critic.load_state_dict(payload["critic"])
         return algo
+
+    @classmethod
+    def from_training_checkpoint(cls, path, device="cpu"):
+        payload = torch.load(path, map_location=device, weights_only=False)
+        config = dict(payload["config"])
+        algo = cls(device=device, **config)
+        for actor, state in zip(algo.actors, payload["actors"]):
+            actor.load_state_dict(state)
+        algo.critic.load_state_dict(payload["critic"])
+        for opt, state in zip(algo.actor_opts, payload["actor_optimizers"]):
+            opt.load_state_dict(state)
+        algo.critic_opt.load_state_dict(payload["critic_optimizer"])
+        return algo, payload["training_progress"]
