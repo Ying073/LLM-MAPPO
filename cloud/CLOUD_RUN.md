@@ -13,10 +13,10 @@
 
 | 步骤 | 在哪 | 命令 (复制粘贴) | 耗时 |
 |---|---|---|---|
-| **①** | **本地 (PowerShell/WSL)** | `bash cloud/upload_to_cloud.sh root@connect.bj1.autodl.com:24022 llm_mappo`<br>把 `<user@host:port>` 换成你租机后给的 SSH 信息 | < 1 min (40MB) |
+| **①** | **本地 PowerShell** | `scp -r -P <端口> "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现" root@connect.cqal.seetacloud.com:/root/`<br>把 `<端口>` 换成租机页给的端口（AutoDL 必须带 `-P 端口`） | < 1 min (40MB) |
 | **②** | **云端 SSH** | 见 §二 step 2 的 `pip install torch` (CUDA) + `pip install numpy matplotlib` | 5–8 min |
 | **③** | **云端 SSH** | `cd /root/llm_mappo && bash cloud/cloud_run.sh` | **~3.6 h** |
-| **④** | **本地** | `bash cloud/download_from_cloud.sh root@connect.bj1.autodl.com:24022 llm_mappo` | < 1 min |
+| **④** | **本地 PowerShell** | `scp -r -P <端口> root@connect.cqal.seetacloud.com:/root/LLM-MAPPO_论文阅读与复现/reproduction/m12_results/ "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现/reproduction/m12_results/"` | < 1 min |
 | **⑤** | **本地** | 见 §六 step 3: 用 `reproduction/plot_8seed.py` 出图 + 写报告 | 5 min |
 
 **⚠ 诚实风险提示**：当前 `train_batched.py` **没有 checkpoint/resume**。
@@ -84,13 +84,14 @@ python -c "import torch; print('cuda:', torch.cuda.is_available(), torch.cuda.ge
 
 ## 三、上传代码 + 数据
 
-用本地 rsync 只传跟 M12 有关的文件（`cloud/`、`reproduction/`、`README*.md`、`paper.md` 等）：
+在**本地 PowerShell**（不要用 `bash`，Windows 的 bash 是 WSL，且无 rsync）用 Windows 自带 `scp` 上传整个项目文件夹。**必须先知道端口**（AutoDL 的 SSH 是 `ssh -p <端口> root@connect.cqal.seetacloud.com`，端口在租机页“SSH 登录指令”里）：
 
-```bash
-# 在【本地】项目根目录执行，把代码推到云主机
-rsync -avz --exclude='.git' --exclude='.workbuddy' \
-  ./ user@CLOUD_IP:~/mappo/
+```powershell
+# 本地 PowerShell，把 <端口> 换成你的（如 23868）
+scp -r -P <端口> "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现" root@connect.cqal.seetacloud.com:/root/
 ```
+
+上传后，云端 `/root/` 下会出现一个 `LLM-MAPPO_论文阅读与复现/` 文件夹（保留中文名没关系，cloud_run.sh 用相对路径）。
 
 **重要：不要漏掉这两个文件**（cloud_run.sh 依赖它）：
 - `reproduction/lrs_runs/R1_K5_seed42_Rbest_fig11.py` —— M11 的 R^best（LRS 缓存）
@@ -99,8 +100,8 @@ rsync -avz --exclude='.git' --exclude='.workbuddy' \
 登录云主机：
 
 ```bash
-ssh user@CLOUD_IP
-cd ~/mappo
+ssh -p <端口> root@connect.cqal.seetacloud.com
+cd "/root/LLM-MAPPO_论文阅读与复现"
 ```
 
 ---
@@ -132,12 +133,11 @@ CANNED_NPZ="" bash cloud/cloud_run.sh              # 不画 Canned 对比
 
 ## 五、下载结果
 
-跑完把 `m12_results/` 拉回本地：
+跑完把 `m12_results/` 拉回本地（**本地 PowerShell**，用 `scp`）：
 
-```bash
-# 本地执行
-rsync -avz user@CLOUD_IP:~/mappo/reproduction/m12_results/ \
-  ./reproduction/m12_results/
+```powershell
+# 本地执行，<端口>、<项目路径> 换成你的
+scp -r -P <端口> root@connect.cqal.seetacloud.com:/root/LLM-MAPPO_论文阅读与复现/reproduction/m12_results/ "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现/reproduction/m12_results/"
 ```
 
 拿到的东西：
