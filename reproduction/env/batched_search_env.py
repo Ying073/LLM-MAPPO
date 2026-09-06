@@ -17,7 +17,8 @@ API 设计（与现有 SearchEnv 完全隔离，仅在 train.py 加 --batch-envs
 """
 import numpy as np
 from .search_env import (
-    LX, LY, N_UAV, N_OBSTACLE, N_TARGET, MAX_STEPS,
+    LX, LY, AREA, GRID, N_UAV, N_OBSTACLE, N_TARGET, MAX_STEPS,
+    TARGET_SPEED, TIME_STEP,
     HEIGHTS, DET_PROB, FALSE_PROB,
     TARGET_CONFIRM_THRESHOLD, MOVING_PROB,
     SENSE_OFFSETS_BY_H, _entropy, DX, DY,
@@ -86,6 +87,10 @@ class BatchedSearchEnv:
         self.t_last    = np.zeros((n_envs, LY, LX), dtype=np.int32)
         self.searched  = np.zeros((n_envs, LY, LX), dtype=np.int8)
         self.t         = np.zeros(n_envs, dtype=np.int32)
+        self.target_xy_m = np.zeros((n_envs, N_TARGET, 2), dtype=np.float64)
+        self.target_heading = np.zeros((n_envs, N_TARGET), dtype=np.float64)
+        self.target_cells = np.zeros((n_envs, N_TARGET, 2), dtype=np.int32)
+        self.target_found = np.zeros((n_envs, N_TARGET), dtype=bool)
 
         self.reset()
 
@@ -119,9 +124,12 @@ class BatchedSearchEnv:
         free_cells = [(iy, ix) for iy, ix in all_cells[N_OBSTACLE:]]
         rng.shuffle(free_cells)
         tgt_cells = free_cells[:N_TARGET]
-        self.zeta[b, :, :] = 0
-        for iy, ix in tgt_cells:
-            self.zeta[b, iy, ix] = 1
+        self.target_xy_m[b] = np.asarray(
+            [[(ix + 0.5) * GRID, (iy + 0.5) * GRID] for iy, ix in tgt_cells], dtype=np.float64
+        )
+        self.target_heading[b] = rng.uniform(0.0, 2.0 * np.pi, size=N_TARGET)
+        self.target_found[b].fill(False)
+        self._refresh_zeta_b(b)
         # (c) 选 N_UAV 格放 UAV
         remaining = free_cells[N_TARGET:]
         rng.shuffle(remaining)
@@ -132,7 +140,20 @@ class BatchedSearchEnv:
         self.t[b] = 0
         self.searched[b, :, :] = 0
         self.t_last[b, :, :] = 0
-        # ltpm/leum/gtpm/geum 已在 __init__ 设好
+        # 每个 episode 必须从未知先验重新开始（算法 3 line 3）。
+        h0 = _entropy_batch(np.float32(0.5)).item()
+        self.ltpm[b].fill(0.5)
+        self.leum[b].fill(h0)
+        self.gtpm[b].fill(0.5)
+        self.geum[b].fill(h0)
+
+    def _refresh_zeta_b(self, b: int):
+        self.zeta[b].fill(0)
+        cells = np.floor(self.target_xy_m[b] / GRID).astype(np.int32)
+        cells[:, 0] = np.clip(cells[:, 0], 0, LX - 1)
+        cells[:, 1] = np.clip(cells[:, 1], 0, LY - 1)
+        self.target_cells[b] = cells
+        self.zeta[b, cells[:, 1], cells[:, 0]] = 1
 
     # ============================================================
     # UAV 动作执行 (向量化)
@@ -144,6 +165,7 @@ class BatchedSearchEnv:
             f"actions shape {actions.shape} != ({self.n_envs}, {N_UAV})"
 
         uav_pos = self.uav_pos
+        old_pos = uav_pos.copy()
         occ = self.occ
         t = self.t
 
@@ -155,7 +177,9 @@ class BatchedSearchEnv:
         # 边界检查
         in_bounds = (nx >= 0) & (nx < LX) & (ny >= 0) & (ny < LY)
         # 障碍检查 (per (env, uav))
-        no_obs = occ[np.arange(self.n_envs)[:, None], ny.clip(0, LY-1), nx.clip(0, LX-1)] == 0
+        obs_at = occ[np.arange(self.n_envs)[:, None], ny.clip(0, LY-1), nx.clip(0, LX-1)] == 1
+        obs_h_at = self.obs_h[np.arange(self.n_envs)[:, None], ny.clip(0, LY-1), nx.clip(0, LX-1)]
+        no_obs = ~(obs_at & (uav_pos[..., 2] <= obs_h_at))
         move_ok = hor_mask & in_bounds & no_obs
         # 应用移动
         new_ix = np.where(move_ok, nx, uav_pos[..., 0])
@@ -180,41 +204,51 @@ class BatchedSearchEnv:
         if des.any():
             uav_pos[..., 2] = np.where(des, np.maximum(uav_pos[..., 2] - 1, 0), uav_pos[..., 2])
 
+        # 同步联合动作可能产生同终点或交换位置；冲突参与者保持原位。
+        for b in range(self.n_envs):
+            candidate = uav_pos[b].copy()
+            for n in range(N_UAV):
+                conflict = any(n != m and np.array_equal(candidate[n], candidate[m]) for m in range(N_UAV))
+                swap = any(
+                    n != m and np.array_equal(candidate[n], old_pos[b, m])
+                    and np.array_equal(candidate[m], old_pos[b, n]) for m in range(N_UAV)
+                )
+                if conflict or swap:
+                    uav_pos[b, n] = old_pos[b, n]
+
     # ============================================================
     # 目标移动（向量化，每 env 独立 RNG 抽样）
     # ============================================================
     def _step_targets(self):
-        """每个目标以 MOVING_PROB 概率走到一个相邻自由格.
-        n_envs × LY × LX 大数组一次性算.
-        """
-        zeta = self.zeta     # (n_envs, LY, LX)
-        occ = self.occ
-        # 对每个 env 抽样 (n_envs, LY, LX) 个是否移动
-        # 抽样代价: 64 env × 400 格 = 25600 抽样, 大数组一次性 OK
-        moves = np.zeros((self.n_envs, LY, LX), dtype=bool)
+        """批量版 1 m/s 连续目标运动；目标身份和数量保持不变。"""
+        step = TARGET_SPEED * TIME_STEP
         for b in range(self.n_envs):
-            rands = self._rngs[b].random((LY, LX))
-            moves[b] = (zeta[b] == 1) & (rands < MOVING_PROB)
-
-        # 对每个 (env, iy, ix) 选一个方向走, 4 个方向概率均等
-        # 用 4 个方向的 dirstack: 每个方向预先铺一个 (4, n_envs, LY, LX) target 位置
-        for b in range(self.n_envs):
-            rng = self._rngs[b]
-            for iy in range(LY):
-                for ix in range(LX):
-                    if not moves[b, iy, ix]:
-                        continue
-                    # 4 个候选方向
-                    cands = []
-                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                        ny_, nx_ = iy + dy, ix + dx
-                        if 0 <= ny_ < LY and 0 <= nx_ < LX and occ[b, ny_, nx_] == 0:
-                            cands.append((ny_, nx_))
-                    if not cands:
-                        continue
-                    ny, nx = cands[int(rng.integers(0, len(cands)))]
-                    self.zeta[b, iy, ix] = 0
-                    self.zeta[b, ny, nx] = 1
+            delta = np.column_stack((np.cos(self.target_heading[b]), np.sin(self.target_heading[b]))) * step
+            proposed = self.target_xy_m[b] + delta
+            occupied = {tuple(map(int, c)) for c in self.target_cells[b].tolist()}
+            for k in range(N_TARGET):
+                old_cell = tuple(map(int, self.target_cells[b, k]))
+                occupied.remove(old_cell)
+                x, y = proposed[k]
+                reflected = False
+                if not (0.0 <= x < AREA):
+                    self.target_heading[b, k] = np.pi - self.target_heading[b, k]
+                    reflected = True
+                if not (0.0 <= y < AREA):
+                    self.target_heading[b, k] = -self.target_heading[b, k]
+                    reflected = True
+                if reflected:
+                    d = step * np.array([np.cos(self.target_heading[b, k]), np.sin(self.target_heading[b, k])])
+                    proposed[k] = np.clip(self.target_xy_m[b, k] + d, 0.0, np.nextafter(AREA, 0.0))
+                ix, iy = np.floor(proposed[k] / GRID).astype(np.int32)
+                cell = (int(ix), int(iy))
+                if self.occ[b, iy, ix] or cell in occupied:
+                    self.target_heading[b, k] = (self.target_heading[b, k] + np.pi) % (2.0 * np.pi)
+                    proposed[k] = self.target_xy_m[b, k]
+                    cell = old_cell
+                occupied.add(cell)
+            self.target_xy_m[b] = proposed
+            self._refresh_zeta_b(b)
 
     # ============================================================
     # 感知地图更新 + 全局融合 (向量化, 7×9 cells 一次性 numpy)
@@ -306,8 +340,12 @@ class BatchedSearchEnv:
         # (3) 感知地图更新 + 全局融合
         self._update_maps()
         # (4) 公式 11 标记 searched
-        newly_confirmed = (self.zeta == 1) & (self.gtpm >= TARGET_CONFIRM_THRESHOLD)
-        self.searched |= newly_confirmed.astype(np.int8)
+        current_confirmed = (self.zeta == 1) & (self.gtpm >= TARGET_CONFIRM_THRESHOLD)
+        self.searched = current_confirmed.astype(np.int8)
+        for b in range(self.n_envs):
+            for k, (ix, iy) in enumerate(self.target_cells[b]):
+                if current_confirmed[b, iy, ix]:
+                    self.target_found[b, k] = True
         # (5) 时间 + done + reward
         self.t += 1
         done = self.t >= MAX_STEPS
@@ -329,6 +367,8 @@ class BatchedSearchEnv:
             infos.append({
                 "area_uncertainty": float(self.geum[b].mean()),
                 "searched_count":  int(self.searched[b].sum()),
+                "found_count": int(self.target_found[b].sum()),
+                "success_rate": float(self.target_found[b].mean()),
                 "targets_total":   N_TARGET,
             })
         return obs, reward.astype(np.float32), done, infos

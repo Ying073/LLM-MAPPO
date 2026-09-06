@@ -30,6 +30,18 @@ N_OBSTACLE = 20                        # 静态障碍物数量
 N_TARGET = 15                          # 动态目标数量
 TARGET_SPEED = 1.0                     # 目标速度 1 m/s
 UAV_SPEED = 10.0                       # UAV 速度 10 m/s
+TIME_STEP = 1.0                        # 表 I: 每个 time step 为 1 s
+E_INITIAL = 6.0e4                      # 表 I: UAV 初始能量 6e4 J
+
+# Eq. (1) 推进功率参数（论文实验设置）。
+P_B = 79.86
+P_D = 88.63
+U_TIP = 120.0
+V_0 = 4.03
+FUSELAGE_DRAG = 0.6
+AIR_DENSITY = 1.225
+ROTOR_SOLIDITY = 0.05
+ROTOR_DISK_AREA = 0.503
 MAX_STEPS = 500                        # 一个 episode 的时间步数 T
 
 # 表 I: 高度 -> 感知域 / 检测概率 / 虚警概率 (公式 4 / 公式 12g–i)
@@ -45,8 +57,9 @@ DY = np.array([-1, 0, 1, 0])      # 屏幕 y 轴向下, "北" 是 iy-1
 # 公式 11 中的目标确认阈值 ξ (paper S025)
 TARGET_CONFIRM_THRESHOLD = 0.8
 
-# 公式 12e: 目标移动概率
-MOVING_PROB = 0.5
+# 旧实现用“每步 0.5 概率跳一个 100 m 网格”，等效速度约 50 m/s，
+# 与表 I 的 1 m/s 不一致。保留名字仅兼容旧导入；新实现使用连续坐标匀速运动。
+MOVING_PROB = 1.0
 
 
 # ============================================================
@@ -72,6 +85,16 @@ def _entropy(p):
     mask = (p > 1e-9) & (p < 1 - 1e-9)
     out[mask] = -(p[mask] * np.log2(p[mask]) + (1 - p[mask]) * np.log2(1 - p[mask]))
     return out.astype(np.float32)
+
+
+def propulsion_power(speed: float) -> float:
+    """论文 Eq. (1) 的多旋翼推进功率 P(v)，单位 W。"""
+    v = float(speed)
+    profile = P_B * (1.0 + 3.0 * v * v / (U_TIP * U_TIP))
+    induced_inner = np.sqrt(1.0 + v ** 4 / (4.0 * V_0 ** 4)) - v * v / (2.0 * V_0 * V_0)
+    induced = P_D * np.sqrt(max(0.0, induced_inner))
+    parasite = 0.5 * FUSELAGE_DRAG * AIR_DENSITY * ROTOR_SOLIDITY * ROTOR_DISK_AREA * v ** 3
+    return float(profile + induced + parasite)
 
 
 # ============================================================
@@ -120,9 +143,17 @@ class SearchEnv:
         free_cells = [(iy, ix) for iy, ix in all_cells[N_OBSTACLE:]]
         self.rng.shuffle(free_cells)
         tgt_cells = free_cells[:N_TARGET]
+        # 每个目标保留独立身份和连续米制坐标。随机方向在一个 episode 内保持，
+        # 每步位移 TARGET_SPEED * TIME_STEP；遇边界/障碍时反射。
+        self.target_xy_m = np.asarray(
+            [[(ix + 0.5) * GRID, (iy + 0.5) * GRID] for iy, ix in tgt_cells],
+            dtype=np.float64,
+        )
+        self.target_heading = self.rng.uniform(0.0, 2.0 * np.pi, size=N_TARGET)
+        self.target_found = np.zeros(N_TARGET, dtype=bool)
+        self.target_first_found_step = np.full(N_TARGET, -1, dtype=np.int32)
         self.zeta = np.zeros((LY, LX), dtype=np.int8)
-        for iy, ix in tgt_cells:
-            self.zeta[iy, ix] = 1
+        self._refresh_zeta()
 
         # (c) 再从剩余格子里随机选 N_UAV 个, 初始高度档 h=1 (100 m)
         remaining = free_cells[N_TARGET:]
@@ -142,9 +173,69 @@ class SearchEnv:
         # (e) 辅助变量
         self.t_last_visit = np.zeros((LY, LX), dtype=np.int32)
         self.searched = np.zeros((LY, LX), dtype=np.int8)
+        self.cumulative_searched = 0
         self.t = 0
 
         return self._get_obs()
+
+    def _refresh_zeta(self):
+        """从固定数量的目标身份重建网格存在状态 ζ_i(t)。"""
+        self.zeta.fill(0)
+        cells = np.floor(self.target_xy_m / GRID).astype(np.int32)
+        cells[:, 0] = np.clip(cells[:, 0], 0, LX - 1)
+        cells[:, 1] = np.clip(cells[:, 1], 0, LY - 1)
+        self.target_cells = cells
+        self.zeta[cells[:, 1], cells[:, 0]] = 1
+
+    def _step_targets(self):
+        """按表 I 的 1 m/s 匀速移动目标，并保持目标数量与身份不变。"""
+        step = TARGET_SPEED * TIME_STEP
+        delta = np.column_stack((np.cos(self.target_heading), np.sin(self.target_heading))) * step
+        proposed = self.target_xy_m + delta
+        occupied_cells = {tuple(map(int, cell)) for cell in self.target_cells.tolist()}
+        for k in range(N_TARGET):
+            old_cell = tuple(map(int, self.target_cells[k]))
+            occupied_cells.remove(old_cell)
+            x, y = proposed[k]
+            reflected = False
+            if not (0.0 <= x < AREA):
+                self.target_heading[k] = np.pi - self.target_heading[k]
+                reflected = True
+            if not (0.0 <= y < AREA):
+                self.target_heading[k] = -self.target_heading[k]
+                reflected = True
+            if reflected:
+                delta_k = step * np.array([np.cos(self.target_heading[k]), np.sin(self.target_heading[k])])
+                proposed[k] = np.clip(self.target_xy_m[k] + delta_k, 0.0, np.nextafter(AREA, 0.0))
+            ix, iy = np.floor(proposed[k] / GRID).astype(np.int32)
+            cell = (int(ix), int(iy))
+            if self.occ[iy, ix] or cell in occupied_cells:
+                self.target_heading[k] = (self.target_heading[k] + np.pi) % (2.0 * np.pi)
+                proposed[k] = self.target_xy_m[k]
+                ix, iy = np.floor(proposed[k] / GRID).astype(np.int32)
+                cell = (int(ix), int(iy))
+            occupied_cells.add(cell)
+        self.target_xy_m = proposed
+        self._refresh_zeta()
+
+    def get_action_masks(self) -> np.ndarray:
+        """返回论文式安全动作掩码，形状为 (N_UAV, 6)。"""
+        masks = np.ones((N_UAV, 6), dtype=bool)
+        occupied = {tuple(map(int, p)) for p in self.uav_pos.tolist()}
+        for n, (ix, iy, h) in enumerate(self.uav_pos):
+            for a in range(4):
+                nx, ny = int(ix + DX[a]), int(iy + DY[a])
+                if not (0 <= nx < LX and 0 <= ny < LY):
+                    masks[n, a] = False
+                    continue
+                if self.occ[ny, nx] and h <= self.obs_h[ny, nx]:
+                    masks[n, a] = False
+                    continue
+                if (nx, ny, int(h)) in occupied - {(int(ix), int(iy), int(h))}:
+                    masks[n, a] = False
+            masks[n, 4] = h < len(HEIGHTS) - 1 and (int(ix), int(iy), int(h + 1)) not in occupied
+            masks[n, 5] = h > 0 and (int(ix), int(iy), int(h - 1)) not in occupied
+        return masks
 
     # ============================================================
     # 三、感知模型 (公式 4 感知域 + 公式 5 检测/虚警)
@@ -239,45 +330,47 @@ class SearchEnv:
         actions = np.asarray(actions, dtype=np.int64)
         assert actions.shape == (N_UAV,), f"actions must be length {N_UAV}"
 
-        # (1) 逐架执行动作, 含简单动作掩码: 越界/障碍 → 保持原位
+        # (1) 同步计算候选位置；冲突动作保持原位，保证 UAV-UAV/UAV-障碍避碰。
+        masks = self.get_action_masks()
+        candidate = self.uav_pos.copy()
         for n, a in enumerate(actions):
-            ix, iy, h = self.uav_pos[n]
-            if 0 <= a <= 3:                        # 水平移动
-                nx, ny = ix + int(DX[a]), iy + int(DY[a])
-                if 0 <= nx < LX and 0 <= ny < LY and self.occ[ny, nx] == 0:
-                    self.uav_pos[n, 0] = nx
-                    self.uav_pos[n, 1] = ny
-                    self.t_last_visit[ny, nx] = self.t
-            elif a == 4:                            # 升 +1 档
-                self.uav_pos[n, 2] = min(h + 1, len(HEIGHTS) - 1)
-            elif a == 5:                            # 降 -1 档
-                self.uav_pos[n, 2] = max(h - 1, 0)
-            else:
+            if not 0 <= a < 6:
                 raise ValueError(f"action {a} out of range 0..5")
+            if not masks[n, a]:
+                continue
+            if a < 4:
+                candidate[n, 0] += int(DX[a])
+                candidate[n, 1] += int(DY[a])
+            elif a == 4:
+                candidate[n, 2] += 1
+            else:
+                candidate[n, 2] -= 1
+        for n in range(N_UAV):
+            conflict = any(n != m and np.array_equal(candidate[n], candidate[m]) for m in range(N_UAV))
+            swap = any(
+                n != m and np.array_equal(candidate[n], self.uav_pos[m])
+                and np.array_equal(candidate[m], self.uav_pos[n]) for m in range(N_UAV)
+            )
+            if conflict or swap:
+                candidate[n] = self.uav_pos[n]
+        self.uav_pos = candidate
+        for ix, iy, _ in self.uav_pos:
+            self.t_last_visit[iy, ix] = self.t
 
-        # (2) 移动目标: 每个目标每步以 MOVING_PROB 概率走到一个随机相邻格
-        for iy in range(LY):
-            for ix in range(LX):
-                if self.zeta[iy, ix] == 0:
-                    continue
-                if self.rng.random() >= MOVING_PROB:
-                    continue
-                cand = [(iy + dy, ix + dx)
-                        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1))
-                        if 0 <= iy + dy < LY and 0 <= ix + dx < LX
-                        and self.occ[iy + dy, ix + dx] == 0]
-                if not cand:
-                    continue
-                ny, nx = cand[int(self.rng.integers(0, len(cand)))]
-                self.zeta[iy, ix] = 0
-                self.zeta[ny, nx] = 1
+        # (2) 动态目标按米制连续坐标移动。
+        self._step_targets()
 
         # (3) 更新感知地图 (公式 6 → 公式 8 → 公式 10)
         self._update_maps()
 
         # (4) 公式 11: 标记被"成功搜索"的目标网格 (ζ=1 且 gtpm ≥ ξ)
-        newly_confirmed = (self.zeta == 1) & (self.gtpm >= TARGET_CONFIRM_THRESHOLD)
-        self.searched |= newly_confirmed.astype(np.int8)
+        current_confirmed = (self.zeta == 1) & (self.gtpm >= TARGET_CONFIRM_THRESHOLD)
+        self.searched = current_confirmed.astype(np.int8)
+        for k, (ix, iy) in enumerate(self.target_cells):
+            if current_confirmed[iy, ix] and not self.target_found[k]:
+                self.target_found[k] = True
+                self.target_first_found_step[k] = self.t + 1
+        self.cumulative_searched += int(current_confirmed.sum())
 
         # (5) 推进时间, 计算 done
         self.t += 1
@@ -287,6 +380,10 @@ class SearchEnv:
         info = {
             "area_uncertainty": self.area_uncertainty(),
             "searched_count": int(self.searched.sum()),
+            "found_count": int(self.target_found.sum()),
+            "success_rate": float(self.target_found.mean()),
+            "target_search_time": int(self.target_first_found_step.max()) if self.target_found.all() else MAX_STEPS,
+            "cumulative_searched": int(self.cumulative_searched),
             "targets_total": N_TARGET,
         }
         return self._get_obs(), reward, done, info

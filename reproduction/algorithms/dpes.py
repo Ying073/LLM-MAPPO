@@ -28,7 +28,7 @@ import numpy as np
 
 from ..env.search_env import (
     LY, LX, N_UAV,
-    TARGET_CONFIRM_THRESHOLD,
+    TARGET_CONFIRM_THRESHOLD, SENSE_OFFSETS_BY_H,
 )
 
 
@@ -146,14 +146,11 @@ class PheromoneMap:
                 # 公式 15: f_i = Σ_{i'∈N_i} (G_s/|N_i|)·[dp_{i'}(t-1) + d_{i'}^hv(t)]
                 acc = 0.0
                 for (nx, ny) in nb:
-                    # d_{i'}^hv: 若邻居 i' 被访问且属于 G_hv / G_lu, 则本步释放
-                    dep = 0.0
-                    if (nx, ny) in visited:
-                        if cls[ny, nx] == G_HV:
-                            dep = self.d_hv
-                        elif cls[ny, nx] == G_LU:
-                            dep = self.d_lu
-                    acc += self.g_s / len(nb) * (self.dp[ny, nx] + dep)
+                    # Eq. (15) only diffuses high-value pheromone.  G_lu is
+                    # explicitly non-diffusive in Eq. (16).
+                    if cls[ny, nx] == G_HV:
+                        dep = self.d_hv if (nx, ny) in visited else 0.0
+                        acc += self.g_s / len(nb) * (self.dp[ny, nx] + dep)
                 f[iy, ix] = acc
 
         # ---- 逐格按类别更新 (公式 14 / 16 / 17) ----
@@ -164,7 +161,7 @@ class PheromoneMap:
                     # 公式 14: dp = (1-E_s)·{(1-G_s)·[dp + d^hv + f]}
                     dep = self.d_hv if (ix, iy) in visited else 0.0
                     self.dp[iy, ix] = ((1 - self.e_s)
-                                       * ((1 - self.g_s) * (self.dp[iy, ix] + dep + f[iy, ix])))
+                                       * ((1 - self.g_s) * (self.dp[iy, ix] + dep) + f[iy, ix]))
                 elif c == G_LU:
                     # 公式 16: dp = dp + d^lu
                     self.dp[iy, ix] = self.dp[iy, ix] + self.d_lu
@@ -194,8 +191,12 @@ class PheromoneMap:
         """
         ix, iy, _ = env.uav_pos[n]
         patch = np.zeros((2 * half + 1, 2 * half + 1), dtype=np.float32)
+        h = int(env.uav_pos[n, 2])
+        valid_offsets = set(SENSE_OFFSETS_BY_H[h])
         for ddy in range(-half, half + 1):
             for ddx in range(-half, half + 1):
+                if (ddy, ddx) not in valid_offsets:
+                    continue
                 ny, nx = iy + ddy, ix + ddx
                 if 0 <= ny < LY and 0 <= nx < LX:
                     patch[half + ddy, half + ddx] = self.dp[ny, nx]

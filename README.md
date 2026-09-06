@@ -1,57 +1,30 @@
 # LLM-MAPPO 论文阅读与复现
 
-复现论文：**Multi-UAV Trajectory Planning for Dynamic Target Search: An LLM-Enhanced Multi-Agent Reinforcement Learning Algorithm**（IEEE TCCN, 2026）
+复现论文 *Multi-UAV Trajectory Planning for Dynamic Target Search: An LLM-Enhanced Multi-Agent Reinforcement Learning Algorithm*（IEEE TCCN, 2026）。
 
-> 一句话：用大模型（LLM）设计奖励函数 + 多智能体 PPO（MAPPO）+ 双模式信息素（DPES），让 7 架无人机在 3D 环境里协同搜索移动目标，搜索时间相比手工设计奖励缩短 71.4%。
+## 当前状态
 
-## 项目结构
+代码已完成一次论文逐式审计和核心修正：动态目标以实体身份连续移动且数量保持 15；观测按 Eq. (18) 组织；7 架 UAV 使用独立 Actor 与集中式 Critic；非法动作在采样 logits 上屏蔽；DPES 按 Eq. (13)–(17) 更新；默认奖励采用附录 Eq. (34)；训练 transition 保存动作前的全局状态；测试阶段冻结策略并运行 8 个独立环境种子。
 
-| 路径 | 内容 |
-|---|---|
-| `LLM-MAPPO_Markdown_Reader/` | 论文中英对照精读（正文、公式索引、图表裁图） |
-| `reproduction/` | 复现代码（仿真环境 + MAPPO + DPES + LLM 奖励塑形） |
-| `HOW_TO_RESUME.md` | **接力指南**（10 分钟上手 + 雷区清单 + 接力 TODO） |
-| `reproduction/README_compare_with_paper.md` | **先读这个**（与论文的诚实差距分析） |
-| `hist_*.npz` | 训练 raw history（rewards/searched/au/actor_loss/critic_loss）|
-| `training_curve_*.png` / `comparison_*.png` | 9 张训练曲线 + 2 张消融对比图 |
-| `Multi-UAV_..._Algorithm.pdf` | 论文原文 |
+新版已在 AutoDL RTX 4090D 上通过 2 个并行环境、每个 5 步的 CUDA smoke，并完成 checkpoint 保存/加载及固定策略评测。下一阶段是 3,000 episode pilot；论文规模训练为 28,000 episode。旧 smoke 来自旧实现，不能视为论文复现结果。
 
-## 复现路线
+## 目录
 
-| 里程碑 | 内容 | 状态 |
-|---|---|---|
-| M0 | 环境准备（conda + GPU PyTorch） | ✅ |
-| M1 | 仿真环境 `reproduction/env/search_env.py` | ✅ |
-| M2 | MAPPO 基线 + 手写稠密奖励（v2 修复 credit assignment） | ✅ |
-| M3 | DPES 双模式信息素（公式 13–17）+ A/B 训练 | ✅ |
-| M4 | LRS 离线 LLM 奖励塑形（公式 20–22, 27–29） | ✅ K=5 闭环验证 η_k 单调 |
-| M5 | LLM-MAPPO 端到端（DPES + LRS + MAPPO 联合 150 ep）| ✅ |
-| M6 | GPU 化（conda + RTX 5060 + minibatch 256） | ✅ |
-| M7 | 三件套消融对比（M2/M3/M5 同 seed 150 ep）+ 与论文差距分析 | ✅ |
-| M8 | 接力指南（HOW_TO_RESUME.md）| ✅ |
+- `LLM-MAPPO_Markdown_Reader/`：论文正文、公式索引与图表材料。
+- `reproduction/`：环境、MAPPO、DPES、论文奖励、训练和固定策略评测。
+- `tests/test_paper_alignment.py`：论文关键约束的回归测试。
+- `cloud/cloud_run.sh`：AutoDL 上的 pilot/formal 训练与 8-seed 测试入口。
+- `cloud/CLOUD_RUN.md`：服务器目录、协议和运行说明。
+- `reproduction/README_compare_with_paper.md`：实现与论文差异清单。
 
-详细的里程碑任务书见 [`reproduction/README.md`](reproduction/README.md)。
+## 运行约定
 
-## 快速开始
+GPU 实验只在 SSH Host `autodl` 上运行，远程项目目录为 `/root/autodl-tmp/projects/llm-mappo`。本机只做静态检查和 CPU 单元测试，不运行 CUDA 训练。
 
 ```bash
-# 1. 用已有 conda llm_mappo 环境（已装 torch+CUDA + numpy + matplotlib）
-"C:/Users/lenovo/anaconda3/envs/llm_mappo/python.exe"
-
-# 2. 跑通 M5/M6 端到端 (DPES + LRS + MAPPO, 150 ep, GPU, ~10 分钟)
-cd "C:/Users/lenovo/AI/大创/LLM-MAPPO_论文阅读与复现"
-python reproduction/train.py --total-episodes 150 --seed 42 \
-    --use-dpes --use-lrs --lrs-K 5 \
-    --device cuda --out-name run_check.png
+ssh autodl
+cd /root/autodl-tmp/projects/llm-mappo
+bash cloud/cloud_run.sh
 ```
 
-> 第一次建环境？照 `reproduction/README_llm_mappo.md` §9.1 装 conda + torch+CUDA 130。
-> 读懂代码？照 `HOW_TO_RESUME.md` §1.2 顺序读 6 个 README。
-
-## 论文精读
-
-论文的结构化精读材料在 `LLM-MAPPO_Markdown_Reader/` 目录：
-
-- `paper.md` — 中英对照正文
-- `equations.md` — 公式索引与中文说明
-- 各图裁图（`*.png`）
+旧实验、旧 LRS 代码和旧图仍保留用于追溯，但正式结果必须来自 `reproduction/paper_aligned_runs/` 下的新运行目录。

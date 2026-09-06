@@ -340,19 +340,20 @@ def evaluate_candidate(reward_fn, env, seed: int = 0) -> tuple[float, dict]:
     """
     # 固定初始观测，保证跨迭代可比
     env.reset()
-    total_searched = 0
+    cumulative_searched = 0
     prev_au = env.area_uncertainty()
     for t in range(MAX_STEPS):
         actions = greedy_step(env, reward_fn, prev_au)
         _, _, done, info = env.step(actions)
-        total_searched = info["searched_count"]
+        cumulative_searched += int(info["searched_count"])
         prev_au = info["area_uncertainty"]
         if done:
             break
-    J = total_searched - info["area_uncertainty"]
+    J = cumulative_searched - info["area_uncertainty"]
     metrics = {
         "J": float(J),
-        "searched": int(total_searched),
+        "searched": int(info["searched_count"]),
+        "cumulative_searched": int(cumulative_searched),
         "area_unc": float(info["area_uncertainty"]),
     }
     return J, metrics

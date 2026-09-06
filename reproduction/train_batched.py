@@ -20,6 +20,7 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import math
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(HERE)
@@ -32,6 +33,12 @@ from reproduction.algorithms.mappo import MAPPO
 from reproduction.algorithms.buffer import RolloutBuffer
 from reproduction.env.search_env import N_UAV, MAX_STEPS
 from reproduction import lrs as _lrs   # [M12] 用于 --lrs-cache 注入 LX/LY/N_UAV globals
+
+
+def compute_n_outer(total_episodes: int, n_envs: int) -> int:
+    if total_episodes <= 0 or n_envs <= 0:
+        raise ValueError("total_episodes and n_envs must be positive")
+    return math.ceil(total_episodes / n_envs)
 
 
 def load_lrs_cache(cache_path: str):
@@ -81,12 +88,14 @@ def parse_args():
     p.add_argument("--lrs-seed", type=int, default=None)
     p.add_argument("--llm-backend", type=str, default="canned",
                    choices=["canned", "deepseek-r1", "deepseek-v3"])
+    p.add_argument("--reward-source", choices=["paper-rbest", "manual", "lrs"],
+                   default="paper-rbest")
     p.add_argument("--lrs-cache", type=str, default=None,
-                   help="[M12] 跳过 LRS K=5, 直接加载一个 R^best.py 文件作为奖励."
-                        " (8 seed 训练共用一份 R^best, 复制论文 §V 协议)")
+                   help="仅在 --reward-source lrs 时加载历史奖励函数；论文对齐默认路径不使用")
     p.add_argument("--out-name", type=str, default="training_curve_batched.png")
     p.add_argument("--save-history", type=str, default=None)
     p.add_argument("--minibatch-size", type=int, default=256)
+    p.add_argument("--checkpoint-out", type=str, default=None)
     return p.parse_args()
 
 
@@ -114,10 +123,10 @@ def train(args):
 
     # ---- [M5] 先跑 LRS 拿 R^best ----
     lrs_reward_fn = None
-    if args.use_lrs:
-        lrs_reward_fn = run_lrs(args)
-    elif args.lrs_cache:                                                  # [M12]
-        lrs_reward_fn = load_lrs_cache(args.lrs_cache)
+    if args.use_lrs or args.reward_source == "lrs":
+        lrs_reward_fn = load_lrs_cache(args.lrs_cache) if args.lrs_cache else run_lrs(args)
+    elif args.lrs_cache:
+        raise ValueError("--lrs-cache requires --reward-source lrs (or --use-lrs)")
 
     # 判断模式
     n_envs = max(1, args.batch_envs)
@@ -126,6 +135,7 @@ def train(args):
         env = BatchedMultiAgentWrapper(
             n_envs=n_envs, base_seed=args.seed,
             use_dpes=args.use_dpes, lrs_reward_fn=lrs_reward_fn,
+            use_paper_reward=args.reward_source == "paper-rbest" and lrs_reward_fn is None,
         )
         obs_batch = env.reset()                             # (n, N_UAV, OBS_DIM)
         obs_dim = obs_batch.shape[-1]
@@ -133,6 +143,7 @@ def train(args):
         env = MultiAgentWrapper(
             seed=args.seed, use_dpes=args.use_dpes,
             lrs_reward_fn=lrs_reward_fn,
+            use_paper_reward=args.reward_source == "paper-rbest" and lrs_reward_fn is None,
         )
         obs_list = env.reset()
         obs_dim = obs_list[0].shape[0]
@@ -142,12 +153,13 @@ def train(args):
           f"n_envs={n_envs}, N_UAV={N_UAV}, obs_dim={obs_dim}, global_dim={global_dim}, "
           f"act_dim=6, rollout_len={args.rollout_len}, device={args.device}, "
           f"use_dpes={args.use_dpes}, use_lrs={args.use_lrs}, "
-          f"reward_path={'lrs' if lrs_reward_fn is not None else 'manual'}")
+          f"reward_path={'lrs' if lrs_reward_fn is not None else args.reward_source}")
 
     mappo = MAPPO(
         obs_dim=obs_dim,
         global_dim=global_dim,
         act_dim=6,
+        n_agents=N_UAV,
         device=args.device,
         minibatch_size=args.minibatch_size,
     )
@@ -160,10 +172,10 @@ def train(args):
     )
 
     rewards_hist, searched_hist, au_hist, actor_loss_hist, critic_loss_hist = [], [], [], [], []
-    # per-env arrays (shape: n_outer × n_envs) — 用于 8-seed mean±std
+    # per-env arrays (shape: n_outer × n_envs) — 诊断并行采样方差
     rewards_per_env, searched_per_env, au_per_env = [], [], []
 
-    n_outer = max(1, args.total_episodes // n_envs)
+    n_outer = compute_n_outer(args.total_episodes, n_envs)
     print(f"[init] total_episodes={args.total_episodes} ÷ n_envs={n_envs} → n_outer={n_outer} 个外迭代")
 
     for outer in range(n_outer):
@@ -176,25 +188,30 @@ def train(args):
         for t in range(args.rollout_len):
             # (1) 选动作
             if use_batched:
-                actions, logp = mappo.select_actions_batched(obs_batch)   # (n, N_UAV), (n, N_UAV)
-                value = mappo.get_value_batched(env.get_global_state())   # (n,)
+                action_masks = env.get_action_masks()
+                current_global_state = env.get_global_state()
+                actions, logp = mappo.select_actions_batched(obs_batch, action_masks)
+                value = mappo.get_value_batched(current_global_state)
             else:
-                actions, logp = mappo.select_actions(obs_list)
-                value = mappo.get_value(env.get_global_state())
+                action_masks = env.get_action_masks()
+                current_global_state = env.get_global_state()
+                actions, logp = mappo.select_actions(obs_list, action_masks)
+                value = mappo.get_value(current_global_state)
 
             # (2) 推进一步
             if use_batched:
                 next_obs_batch, shared_r, done, per_agent_r, infos = env.step(actions)
                 ep_reward += shared_r
                 for b in range(n_envs):
-                    ep_searched[b] = max(ep_searched[b], infos[b]["searched_count"])
+                    ep_searched[b] = infos[b]["found_count"]
                     ep_au_final[b] = infos[b]["area_uncertainty"]
                 done_flags[:] = done
                 buffer.store_batch(
                     obs=obs_batch,
-                    global_s=env.get_global_state(),
+                    global_s=current_global_state,
                     actions=actions, logp=logp,
                     reward=per_agent_r, done=done_flags, value=value,
+                    action_mask=action_masks,
                 )
                 obs_batch = next_obs_batch
                 # (3) 对 done env partial_reset
@@ -209,12 +226,13 @@ def train(args):
                 per_agent_r = info["per_agent_reward"]
                 buffer.store(
                     obs=obs_list,
-                    global_s=env.get_global_state(),
+                    global_s=current_global_state,
                     actions=actions, logp=logp,
                     reward=per_agent_r, done=done, value=value,
+                    action_mask=action_masks,
                 )
                 ep_reward += shared_r
-                ep_searched = info["searched_count"]
+                ep_searched = info["found_count"]
                 ep_au_final = info["area_uncertainty"]
                 obs_list = next_obs_list
                 done_flags[:] = done
@@ -237,7 +255,7 @@ def train(args):
             rewards_hist.append(float(ep_reward.mean()))
             searched_hist.append(float(ep_searched.mean()))
             au_hist.append(float(ep_au_final.mean()))
-            # per-env (供 8-seed mean±std)
+            # per-env diagnostics
             rewards_per_env.append(ep_reward.copy())
             searched_per_env.append(ep_searched.copy())
             au_per_env.append(ep_au_final.copy())
@@ -298,14 +316,24 @@ def train(args):
             actor_loss=np.asarray(actor_loss_hist, dtype=np.float32),
             critic_loss=np.asarray(critic_loss_hist, dtype=np.float32),
             config=np.array([args.use_dpes, args.use_lrs, n_envs]),
+            reward_source=np.asarray(args.reward_source),
+            requested_episodes=np.asarray(args.total_episodes, dtype=np.int64),
+            actual_episodes=np.asarray(n_outer * n_envs, dtype=np.int64),
+            seed=np.asarray(args.seed, dtype=np.int64),
         )
-        # per-env arrays (供 8-seed mean±std 统计)
+        # per-env diagnostics (not independent trained-policy seeds)
         if use_batched and rewards_per_env:
             save_kwargs["rewards_per_env"] = np.stack(rewards_per_env).astype(np.float32)
             save_kwargs["searched_per_env"] = np.stack(searched_per_env).astype(np.float32)
             save_kwargs["au_per_env"] = np.stack(au_per_env).astype(np.float32)
         np.savez_compressed(hist_path, **save_kwargs)
         print(f"[train] saved raw history to {hist_path}")
+
+    if args.checkpoint_out:
+        checkpoint_path = os.path.abspath(args.checkpoint_out)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        mappo.save_checkpoint(checkpoint_path)
+        print(f"[train] saved checkpoint to {checkpoint_path}")
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ import numpy as np
 
 from .search_env import (
     SearchEnv, LX, LY, N_UAV, N_OBSTACLE, MAX_STEPS,
-    HEIGHTS, SENSE_SIZE, DX, DY,
+    HEIGHTS, SENSE_SIZE, DX, DY, E_INITIAL, TIME_STEP, UAV_SPEED, propulsion_power,
 )
 from ..reward.manual_reward import compute_manual_reward, SENSE_OFFSETS_BY_H
 from ..algorithms.dpes import PheromoneMap
@@ -51,11 +51,13 @@ class MultiAgentWrapper:
 
     PATCH = 5       # 5x5 局部窗口（覆盖所有档位的可见格 + 外圈 unknown）
     HALF = 2        # PATCH // 2 = 2，所以窗口中心是 UAV 自身
-    # 基础 60 维 + DPES 信息素 patch 25 维 = 85 维 (M3)
-    OBS_DIM = 3 + 25 + 25 + 25 + 3 + 3 + 1  # = 85
+    # 公式 (18): 所有 UAV 位置 p(t) + 本 UAV 感知域不确定度 χ_n(t)
+    # + 感知域存在状态 ES_n(t)；DPES 模式追加 DP_n(t)。
+    OBS_DIM_NO_DPES = N_UAV * 3 + 25 + 25  # 71
+    OBS_DIM = OBS_DIM_NO_DPES + 25          # 96
 
     def __init__(self, seed: int = 0, use_dpes: bool = True,
-                 lrs_reward_fn=None):
+                 lrs_reward_fn=None, use_paper_reward: bool = False):
         """
         Args:
             seed       : 环境随机种子
@@ -72,6 +74,7 @@ class MultiAgentWrapper:
         self.energy = np.full(N_UAV, 1.0, dtype=np.float32)  # E_n(0)/E^ini ∈ [0,1]
         self.prev_area_uncertainty = None    # 上一步的 area uncertainty，手写奖励用
         self.lrs_reward_fn = lrs_reward_fn  # None → 用 manual_reward；非 None → LRS 路径
+        self.use_paper_reward = use_paper_reward
 
     # ----------------------------------------------------------
     # 把内部 env 状态转成 MAPPO 需要的接口
@@ -95,6 +98,10 @@ class MultiAgentWrapper:
         actions = np.asarray(actions, dtype=np.int64)
         assert actions.shape == (N_UAV,)
 
+        # transition 的前态必须在 step 前保存；Eq. (34) 的 Delta U 与 Critic
+        # 的 O(t) 都依赖这个时间对齐。
+        prev_geum = self.env.geum.copy()
+
         # (1) 推进基础 env，得到全局信息
         _, _, done, env_info = self.env.step(actions.tolist())
 
@@ -102,10 +109,9 @@ class MultiAgentWrapper:
         if self.dpes is not None:
             self.dpes.update(self.env)
 
-        # (2) 每架 UAV 简化的能耗模型: 升/降 0.001，水平/悬停 0.0005
-        #     (公式 1–3 在 M2 暂时用常数替代，物理能耗估计放到 M3 调优)
-        for n, a in enumerate(actions):
-            self.energy[n] = max(0.0, self.energy[n] - (0.001 if a in (4, 5) else 0.0005))
+        # (2) Eq. (1)–(3): 表 I 的 10 m/s 与 1 s time step。
+        energy_drop = propulsion_power(UAV_SPEED) * TIME_STEP / E_INITIAL
+        self.energy[:] = np.maximum(0.0, self.energy - energy_drop)
 
         # (3) 计算稠密奖励 —— LRS 路径 (M5) 或 手写稠密 (M2/M3/M4 单独跑时)
         cur_au = self.env.area_uncertainty()
@@ -113,7 +119,12 @@ class MultiAgentWrapper:
         # "本步新确认的格子"集合，用于搜索奖励的因果信用分配
         newly_confirmed = cur_searched.astype(bool) & ~self.prev_searched.astype(bool)
 
-        if self.lrs_reward_fn is not None:
+        reward_components = None
+        if self.use_paper_reward:
+            from ..reward.paper_reward import compute_paper_rbest
+            shared_reward, reward_components = compute_paper_rbest(prev_geum, self.env, actions)
+            per_agent_reward = np.full(N_UAV, shared_reward, dtype=np.float32)
+        elif self.lrs_reward_fn is not None:
             # M5 路径: R^best (R_best) 主项 + 安全/能耗惩罚
             shared_reward, per_agent_reward = self._lrs_path_reward(
                 actions=actions,
@@ -137,7 +148,13 @@ class MultiAgentWrapper:
         info = dict(env_info)
         info["per_agent_reward"] = per_agent_reward   # shape (N_UAV,)
         info["newly_confirmed_count"] = int(newly_confirmed.sum())  # [新增] 方便 debug
+        if reward_components is not None:
+            info["paper_reward_components"] = reward_components
         return local_obs, shared_reward, done, info
+
+    def get_action_masks(self) -> np.ndarray:
+        """论文 §IV-C 的安全动作掩码。"""
+        return self.env.get_action_masks()
 
     # ----------------------------------------------------------
     # [M5] LRS 路径: R^best(env, n, a, prev_au) + 安全惩罚
@@ -190,47 +207,28 @@ class MultiAgentWrapper:
     def _uav_obs(self, n: int) -> np.ndarray:
         ix, iy, h = self.env.uav_pos[n]
 
-        # (1) 自身状态 3 维
-        own = np.array([
-            ix / (LX - 1),
-            iy / (LY - 1),
-            h / max(1, len(HEIGHTS) - 1),
-        ], dtype=np.float32)
+        # (1) 论文公式 (18) 的 p(t)：所有 UAV 的三维位置。
+        all_pos = self.env.uav_pos.astype(np.float32).copy()
+        all_pos[:, 0] /= (LX - 1)
+        all_pos[:, 1] /= (LY - 1)
+        all_pos[:, 2] /= max(1, len(HEIGHTS) - 1)
+        all_pos = all_pos.reshape(-1)
 
         # (2)(3) 5x5 patch: 可见格填实况, 其余填 0 (unknown)
         geum_patch = np.zeros((self.PATCH, self.PATCH), dtype=np.float32)
-        zeta_patch = np.zeros((self.PATCH, self.PATCH), dtype=np.float32)
+        es_patch = np.zeros((self.PATCH, self.PATCH), dtype=np.float32)
         for ddy, ddx in SENSE_OFFSETS_BY_H[h]:
             py = self.HALF + ddy
             px = self.HALF + ddx
             ny, nx = iy + ddy, ix + ddx
             if 0 <= py < self.PATCH and 0 <= px < self.PATCH and 0 <= ny < LY and 0 <= nx < LX:
                 geum_patch[py, px] = self.env.geum[ny, nx]
-                zeta_patch[py, px] = self.env.zeta[ny, nx]
+                # ES_n(t): 感知域内 target=+1, obstacle=-1, empty=0。
+                es_patch[py, px] = 1.0 if self.env.zeta[ny, nx] else (-1.0 if self.env.occ[ny, nx] else 0.0)
         geum_flat = geum_patch.flatten()
-        zeta_flat = zeta_patch.flatten()
+        es_flat = es_patch.flatten()
 
-        # (4) 最近障碍：方向 + 距离 (3 维)
-        ob_dx, ob_dy, ob_d = _nearest_obstacle(self.env.occ, ix, iy)
-        max_dim = max(LX, LY)
-        obstacle = np.array([
-            ob_dx / max_dim,
-            ob_dy / max_dim,
-            min(ob_d, max_dim) / max_dim,
-        ], dtype=np.float32)
-
-        # (5) 最近的其他 UAV：方向 + 距离 + 高度差 (3 维)
-        u_dx, u_dy, u_dh = _nearest_uav(self.env.uav_pos, n)
-        uav_other = np.array([
-            u_dx / max_dim,
-            u_dy / max_dim,
-            u_dh / max(1, len(HEIGHTS) - 1),
-        ], dtype=np.float32)
-
-        # (6) 自身能量 (1 维)
-        energy = np.array([self.energy[n]], dtype=np.float32)
-
-        # (7) [M3] DPES 信息素 patch (25 维): 感知域内的信息素场
+        # (4) [M3] DPES 信息素 patch (25 维): 感知域内的信息素场
         if self.dpes is not None:
             dp_patch = self.dpes.get_patch(self.env, n, half=self.HALF)
             dp_flat = dp_patch.flatten()
@@ -238,10 +236,9 @@ class MultiAgentWrapper:
             dp_flat = np.zeros(self.PATCH * self.PATCH, dtype=np.float32)
 
         if self.dpes is not None:
-            return np.concatenate([own, geum_flat, zeta_flat, dp_flat, obstacle, uav_other, energy])
+            return np.concatenate([all_pos, geum_flat, es_flat, dp_flat])
         else:
-            # 无 DPES (M2 基线), 保持 60 维
-            return np.concatenate([own, geum_flat, zeta_flat, obstacle, uav_other, energy])
+            return np.concatenate([all_pos, geum_flat, es_flat])
 
 
 # ---------------------------------------------------------------

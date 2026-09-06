@@ -36,6 +36,8 @@ logs/
 results/
 outputs/
 figures/
+reproduction/paper_aligned_runs/
+reproduction/downloaded_runs/
 *.log
 *.tfevent
 *.events.out.tfevents.*

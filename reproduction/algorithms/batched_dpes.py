@@ -66,56 +66,47 @@ class BatchedPheromoneMap:
         # 用 roll 一次性算 4 个方向的邻居 dp
         dp = self.dp
         f = np.zeros((n, 20, 20), dtype=np.float32)
-        for shift_dy, shift_dx, base_dep in [
-            (-1, 0, D_LU),  # 北
-            (1, 0, D_LU),   # 南
-            (0, -1, D_LU),  # 西
-            (0, 1, D_LU),   # 东
+        degree = np.full((20, 20), 4.0, dtype=np.float32)
+        degree[0, :] -= 1; degree[-1, :] -= 1
+        degree[:, 0] -= 1; degree[:, -1] -= 1
+        for shift_dy, shift_dx in [
+            (-1, 0),  # 北
+            (1, 0),   # 南
+            (0, -1),  # 西
+            (0, 1),   # 东
         ]:
             # 邻居 dp
             nb_dp = np.roll(dp, shift=(-shift_dy, -shift_dx), axis=(1, 2))
             # 让 roll 进来的无效邻居 (边界外的) 视为 0
             if shift_dy != 0:
-                if shift_dy == -1:  # 北 (ylarge in image y)
-                    nb_dp[:, -1, :] = 0.0
-                else:                # 南
+                if shift_dy == -1:  # 北邻居: 顶边没有 y-1
                     nb_dp[:, 0, :] = 0.0
+                else:                # 南邻居: 底边没有 y+1
+                    nb_dp[:, -1, :] = 0.0
             if shift_dx != 0:
-                if shift_dx == -1:  # 西 (x larger)
-                    nb_dp[:, :, -1] = 0.0
-                else:                # 东
+                if shift_dx == -1:  # 西邻居: 左边没有 x-1
                     nb_dp[:, :, 0] = 0.0
+                else:                # 东邻居: 右边没有 x+1
+                    nb_dp[:, :, -1] = 0.0
             # |N_i| = 邻居数: 但这个公式里的 |N_i| 是 *本格* 的邻居数, 不是邻居的.
             # 假设内格 |N_i| = 4, 边/角格更少. 但论文用 cell_i 处可达邻居数.
             # 简化: 假设所有内格 (但 inner cells are 绝大部分)
-            n_neigh = np.full((20, 20), 4.0, dtype=np.float32)
-            # 边界格修正
-            if shift_dy == -1:
-                n_neigh[-1, :] = 3.0  # 北边行: 邻居少 (北边没了)
-            if shift_dy == 1:
-                n_neigh[0, :] = 3.0
-            if shift_dx == -1:
-                n_neigh[:, -1] = 3.0
-            if shift_dx == 1:
-                n_neigh[:, 0] = 3.0
-            # 角格更复杂, 简化忽略 (不到 4% cells)
-            # dep_{i'}: 邻居被访问时, 若是 G_hv → +d_hv; 若是 G_lu → +d_lu
+            # Eq. (15) only diffuses G_hv. G_lu is non-diffusive (Eq. 16).
             dep = np.zeros((n, 20, 20), dtype=np.float32)
             visited_nb = np.roll(visited, shift=(-shift_dy, -shift_dx), axis=(1, 2))
             if shift_dy != 0:
-                visited_nb[:, -1 if shift_dy == -1 else 0, :] = False
+                visited_nb[:, 0 if shift_dy == -1 else -1, :] = False
             if shift_dx != 0:
-                visited_nb[:, :, -1 if shift_dx == -1 else 0] = False
+                visited_nb[:, :, 0 if shift_dx == -1 else -1] = False
             # 同一 cls 索引 (邻居的类别)
             cls_nb = np.roll(cls, shift=(-shift_dy, -shift_dx), axis=(1, 2))
             if shift_dy != 0:
-                cls_nb[:, -1 if shift_dy == -1 else 0, :] = G_OTHER
+                cls_nb[:, 0 if shift_dy == -1 else -1, :] = G_OTHER
             if shift_dx != 0:
-                cls_nb[:, :, -1 if shift_dx == -1 else 0] = G_OTHER
+                cls_nb[:, :, 0 if shift_dx == -1 else -1] = G_OTHER
             dep[(visited_nb) & (cls_nb == G_HV)] = self.d_hv
-            dep[(visited_nb) & (cls_nb == G_LU)] = self.d_lu
             # 累加
-            f += self.g_s / n_neigh[None] * (nb_dp + dep)
+            f += self.g_s / degree[None] * np.where(cls_nb == G_HV, nb_dp + dep, 0.0)
 
         # 公式 14, 16, 17: 按 cls 更新 dp
         # 注意: dep (本步在本格的释放) 用 visited * cls == hv
@@ -124,7 +115,7 @@ class BatchedPheromoneMap:
         is_hv = (cls == G_HV)
         self.dp = np.where(
             is_hv,
-            (1 - self.e_s) * ((1 - self.g_s) * (dp + dep_at + f)),
+            (1 - self.e_s) * ((1 - self.g_s) * (dp + dep_at) + f),
             self.dp if False else self.dp,  # placeholder, 后续覆盖
         )
         # G_lu (公式 16): dp = dp + d_lu, 然后访问后立即清零
@@ -137,7 +128,7 @@ class BatchedPheromoneMap:
         # 合并三类
         new_dp = dp.copy()
         new_dp = np.where(is_hv,
-                          (1 - self.e_s) * ((1 - self.g_s) * (dp + dep_at + f)),
+                          (1 - self.e_s) * ((1 - self.g_s) * (dp + dep_at) + f),
                           new_dp)
         new_dp = np.where(is_lu, dp_new_lu, new_dp)
         new_dp = np.where(is_cs, dp_new_cs, new_dp)

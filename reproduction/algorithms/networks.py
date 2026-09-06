@@ -11,8 +11,8 @@ networks.py —— Actor / Critic 网络结构
         - Critic V(s(t))            用 *全局* state (所有 UAV 观测拼起来) → 公式 25
 
     网络形状 (M2 取最简版):
-        Actor  : MLP(in=60, 64, 64, out=6), Tanh 激活, 输出动作 logits
-        Critic : MLP(in=60*N_UAV, 128, 64, out=1), Tanh 激活, 输出标量价值
+        Actor  : MLP(in=obs_dim, 64, 64, out=6), ReLU 激活, 输出动作 logits
+        Critic : MLP(in=obs_dim*N_UAV, 64, 64, out=1), ReLU 激活, 输出标量价值
 """
 
 import torch
@@ -27,15 +27,15 @@ def init_weights(layer: nn.Module):
 
 
 class Actor(nn.Module):
-    """每架 UAV 一个 Actor (各自分散执行)；这里共享参数，batch 维对应不同 UAV."""
+    """单架 UAV 的 Actor；MAPPO 为每架 UAV 分别实例化一份参数。"""
 
     def __init__(self, obs_dim: int = 60, act_dim: int = 6, hidden: int = 64):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden),
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Linear(hidden, hidden),
-            nn.Tanh(),
+            nn.ReLU(),
             nn.Linear(hidden, act_dim),
         )
         self.apply(init_weights)
@@ -44,7 +44,7 @@ class Actor(nn.Module):
         """输入 obs: (B, obs_dim) → logits: (B, act_dim)."""
         return self.net(obs)
 
-    def get_action(self, obs: torch.Tensor):
+    def get_action(self, obs: torch.Tensor, action_mask: torch.Tensor | None = None):
         """从 Categorical 分布采样一个动作 + 给 log_prob 和 entropy.
 
         返回:
@@ -53,6 +53,8 @@ class Actor(nn.Module):
             entropy: (B,) float  H[π(·|obs)]
         """
         logits = self.forward(obs)
+        if action_mask is not None:
+            logits = logits.masked_fill(~action_mask.bool(), torch.finfo(logits.dtype).min)
         dist = torch.distributions.Categorical(logits=logits)
         action = dist.sample()
         return action, dist.log_prob(action), dist.entropy()
@@ -61,14 +63,14 @@ class Actor(nn.Module):
 class Critic(nn.Module):
     """集中式 Critic：输入 = 全局 state = 所有 UAV 局部观测的拼接."""
 
-    def __init__(self, global_state_dim: int, hidden: int = 128):
+    def __init__(self, global_state_dim: int, hidden: int = 64):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(global_state_dim, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden // 2),
-            nn.Tanh(),
-            nn.Linear(hidden // 2, 1),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1),
         )
         self.apply(init_weights)
 

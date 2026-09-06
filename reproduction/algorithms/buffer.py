@@ -31,7 +31,7 @@ class RolloutBuffer:
     """
 
     def __init__(self, rollout_len: int, n_uav: int, obs_dim: int, global_dim: int,
-                 gamma: float = 0.99, gae_lambda: float = 0.95,
+                 gamma: float = 0.95, gae_lambda: float = 0.95,
                  n_envs: int = 1):
         self.T = rollout_len
         self.N = n_uav
@@ -47,6 +47,7 @@ class RolloutBuffer:
             self.reward = np.zeros((self.T, self.N), dtype=np.float32)
             self.done = np.zeros((self.T,), dtype=np.float32)
             self.value = np.zeros((self.T,), dtype=np.float32)
+            self.action_mask = np.ones((self.T, self.N, 6), dtype=bool)
         else:
             # batched: 在 obs/actions/logp/reward 上加 n_envs 维
             # done 和 value 也加 n_envs 维 (per-env bootstrap)
@@ -56,13 +57,14 @@ class RolloutBuffer:
             self.reward = np.zeros((self.T, self.E, self.N), dtype=np.float32)
             self.done = np.zeros((self.T, self.E), dtype=np.float32)
             self.value = np.zeros((self.T, self.E), dtype=np.float32)
+            self.action_mask = np.ones((self.T, self.E, self.N, 6), dtype=bool)
         # global_s 是 per-step-per-env 共有 (Critic 看全局 state, 但 train.py 是 1 env 共享 global_dim = obs_dim * N)
         # batched 时每 env 各自有 global_dim 长度
         self.global_s = np.zeros((self.T, global_dim * n_envs), dtype=np.float32)
 
         self.ptr = 0
 
-    def store(self, obs, global_s, actions, logp, reward, done, value):
+    def store(self, obs, global_s, actions, logp, reward, done, value, action_mask=None):
         """存一步 (n_envs=1 模式).
         obs: (N, obs_dim) list / array; reward: (N,) array; value: scalar; done: bool/scalar.
         """
@@ -73,9 +75,11 @@ class RolloutBuffer:
         self.reward[self.ptr] = np.asarray(reward, dtype=np.float32)
         self.done[self.ptr] = float(done)
         self.value[self.ptr] = float(value)
+        if action_mask is not None:
+            self.action_mask[self.ptr] = np.asarray(action_mask, dtype=bool)
         self.ptr += 1
 
-    def store_batch(self, obs, global_s, actions, logp, reward, done, value):
+    def store_batch(self, obs, global_s, actions, logp, reward, done, value, action_mask=None):
         """存 batched 一步 (n_envs>1).
         obs: (n_envs, N_UAV, obs_dim) ndarray
         global_s: (n_envs, global_dim)
@@ -90,6 +94,8 @@ class RolloutBuffer:
         self.reward[self.ptr] = np.asarray(reward, dtype=np.float32)
         self.done[self.ptr] = np.asarray(done, dtype=np.float32)
         self.value[self.ptr] = np.asarray(value, dtype=np.float32)
+        if action_mask is not None:
+            self.action_mask[self.ptr] = np.asarray(action_mask, dtype=bool)
         self.ptr += 1
 
     def reset(self):
@@ -114,12 +120,12 @@ class RolloutBuffer:
         """
         if self.E == 1:
             # 单 env 路径, 与 v1 兼容
-            rewards = self.reward.mean(axis=1)                       # (T,)
-            values = self.value.copy()                                # (T,)
+            rewards = self.reward[:self.ptr].mean(axis=1)
+            values = self.value[:self.ptr].copy()
             next_value = float(last_value)
-            advantages = np.zeros(self.T, dtype=np.float32)
+            advantages = np.zeros(self.ptr, dtype=np.float32)
             last_adv = 0.0
-            for t in reversed(range(self.T)):
+            for t in reversed(range(self.ptr)):
                 mask = 1.0 - self.done[t]
                 delta = rewards[t] + self.gamma * next_value * mask - values[t]
                 last_adv = delta + self.gamma * self.lam * mask * last_adv
@@ -130,20 +136,12 @@ class RolloutBuffer:
         else:
             # batched 路径: 每 env 独立 GAE, 然后展平
             # rewards (T, E, N) → per-env mean (T, E)
-            rewards = self.reward.mean(axis=2)                       # (T, E)
-            values = self.value.copy()                                # (T, E)
+            rewards = self.reward[:self.ptr].mean(axis=2)
+            values = self.value[:self.ptr].copy()
             next_value = np.asarray(last_value, dtype=np.float32)    # (E,)
-            advantages = np.zeros((self.T, self.E), dtype=np.float32)
-            for t in reversed(range(self.T)):
-                mask = 1.0 - self.done[t]                            # (E,)
-                delta = rewards[t] + self.gamma * next_value * mask - values[t]  # (E,)
-                # 沿 time 累积优势: 但同时间不同 env 是并行的, 各自计算 GAE
-                # 这里我们其实是要对每个 env 独立倒推, 所以这里 last_adv 也应是 (E,) 向量
-                # 这是首次实现, 简化版: 用 ndarray
-            # 简化: 因为 E 通常很小 (<= 64), 直接用循环
-            advantages = np.zeros((self.T, self.E), dtype=np.float32)
+            advantages = np.zeros((self.ptr, self.E), dtype=np.float32)
             last_adv = np.zeros(self.E, dtype=np.float32)
-            for t in reversed(range(self.T)):
+            for t in reversed(range(self.ptr)):
                 mask = 1.0 - self.done[t]                            # (E,)
                 delta = rewards[t] + self.gamma * next_value * mask - values[t]
                 last_adv = delta + self.gamma * self.lam * mask * last_adv
@@ -162,21 +160,21 @@ class RolloutBuffer:
         Yields: dict of tensors.
         """
         if self.E == 1:
-            T, N = self.reward.shape[0], self.reward.shape[1]
-            obs_flat = self.obs.reshape(T * N, -1)
-            global_flat = np.repeat(self.global_s, N, axis=0)
-            actions_flat = self.actions.reshape(-1)
-            logp_flat = self.logp.reshape(-1)
+            T, N = self.ptr, self.reward.shape[1]
+            obs_flat = self.obs[:T].reshape(T * N, -1)
+            global_flat = np.repeat(self.global_s[:T], N, axis=0)
+            actions_flat = self.actions[:T].reshape(-1)
+            logp_flat = self.logp[:T].reshape(-1)
             adv_flat = np.repeat(advantages, N)
             ret_flat = np.repeat(returns, N)
         else:
-            T, E, N = self.reward.shape
-            obs_flat = self.obs.reshape(T * E * N, -1)
+            T, E, N = self.ptr, self.E, self.N
+            obs_flat = self.obs[:T].reshape(T * E * N, -1)
             # global_s (T, E*global_dim) → 每个 (t, e) 对应 N 个 UAV
-            gs_per_step_env = self.global_s.reshape(T, E, -1)        # (T, E, global_dim)
+            gs_per_step_env = self.global_s[:T].reshape(T, E, -1)
             global_flat = np.repeat(gs_per_step_env[:, :, None], N, axis=2).reshape(T * E * N, -1)
-            actions_flat = self.actions.reshape(-1)
-            logp_flat = self.logp.reshape(-1)
+            actions_flat = self.actions[:T].reshape(-1)
+            logp_flat = self.logp[:T].reshape(-1)
             # advantages (T, E) → (T*E,) → 每份重复 N 份
             adv_per_te = advantages.reshape(-1)                        # (T*E,)
             adv_flat = np.repeat(adv_per_te, N)                         # (T*E*N,)

@@ -20,7 +20,8 @@ M2/M3 接入示例 (在 train.py):
 """
 import numpy as np
 
-from .search_env import LX, LY, N_UAV, HEIGHTS
+from .search_env import (LX, LY, N_UAV, HEIGHTS, E_INITIAL, TIME_STEP,
+                         UAV_SPEED, propulsion_power)
 from .batched_search_env import BatchedSearchEnv
 from .env_wrapper import _nearest_obstacle, _nearest_uav, SENSE_OFFSETS_BY_H
 from ..reward.manual_reward import compute_manual_reward
@@ -31,11 +32,11 @@ class BatchedMultiAgentWrapper:
 
     PATCH = 5
     HALF = 2
-    OBS_DIM = 3 + 25 + 25 + 25 + 3 + 3 + 1  # 85 维 (有 DPES)
-    OBS_DIM_NO_DPES = 60
+    OBS_DIM_NO_DPES = N_UAV * 3 + 25 + 25  # 71
+    OBS_DIM = OBS_DIM_NO_DPES + 25          # 96
 
     def __init__(self, n_envs: int, base_seed: int = 0, use_dpes: bool = True,
-                 lrs_reward_fn=None):
+                 lrs_reward_fn=None, use_paper_reward: bool = False):
         self.n_envs = n_envs
         self.use_dpes = use_dpes
         self.env = BatchedSearchEnv(n_envs, base_seed)
@@ -49,6 +50,7 @@ class BatchedMultiAgentWrapper:
         self.prev_au = np.zeros(n_envs, dtype=np.float32)
         self.prev_searched = np.zeros((n_envs, LY, LX), dtype=np.int8)
         self.lrs_reward_fn = lrs_reward_fn
+        self.use_paper_reward = use_paper_reward
         # Step counter for LRS 的 prev_au
         self._t = np.zeros(n_envs, dtype=np.int32)
 
@@ -83,6 +85,7 @@ class BatchedMultiAgentWrapper:
         assert actions.shape == (self.n_envs, N_UAV), \
             f"actions shape {actions.shape} != ({self.n_envs}, {N_UAV})"
 
+        prev_geum = self.env.geum.copy()
         # (1) 推进底层 BatchedSearchEnv
         env_obs, env_shared_rew, done, infos = self.env.step(actions)
         self._t += 1
@@ -91,9 +94,8 @@ class BatchedMultiAgentWrapper:
         if self.dpes is not None:
             self.dpes.update(self.env)
 
-        # (2) 能耗: 升/降 -0.001, 水平/悬停 -0.0005
-        hs_mask = (actions >= 4) & (actions <= 5)        # (n_envs, N_UAV)
-        delta = np.where(hs_mask, 0.001, 0.0005)
+        # (2) Eq. (1)–(3) 推进能耗，energy 保存为 E_n/E_ini。
+        delta = propulsion_power(UAV_SPEED) * TIME_STEP / E_INITIAL
         self.energy[:] = np.maximum(0.0, self.energy - delta)
 
         # (3) 计算稠密奖励 (M2/M3 走 manual_reward, M5 走 lrs_reward_fn)
@@ -108,7 +110,12 @@ class BatchedMultiAgentWrapper:
         # 逐 env 调用 manual_reward (保留调用兼容性, manual_reward 不接受 batch 数组)
         # 时间复杂度: O(n_envs) 而不是 O(n_envs×N_UAV), 因为 manual_reward 内部已经 loop 7 UAV
         for b in range(self.n_envs):
-            if self.lrs_reward_fn is not None:
+            if self.use_paper_reward:
+                from ..reward.paper_reward import compute_paper_rbest
+                shared_b, components = compute_paper_rbest(prev_geum[b], self.env_for_b(b), actions[b])
+                per_b = np.full(N_UAV, shared_b, dtype=np.float32)
+                infos[b]["paper_reward_components"] = components
+            elif self.lrs_reward_fn is not None:
                 # M5 路径 (LRS): per-UAV 调一次
                 shared_b, per_b = self._lrs_per_env(b, actions[b])
             else:
@@ -139,6 +146,24 @@ class BatchedMultiAgentWrapper:
             infos[b]["per_agent_reward"] = per_agent_reward[b]
             infos[b]["newly_confirmed_count"] = int(newly_count[b])
         return obs, shared_reward, done, per_agent_reward, infos
+
+    def get_action_masks(self) -> np.ndarray:
+        masks = np.ones((self.n_envs, N_UAV, 6), dtype=bool)
+        for b in range(self.n_envs):
+            pos = self.env.uav_pos[b]
+            occupied = {tuple(map(int, p)) for p in pos.tolist()}
+            for n, (ix, iy, h) in enumerate(pos):
+                for a, (dx, dy) in enumerate(((0, -1), (1, 0), (0, 1), (-1, 0))):
+                    nx, ny = int(ix + dx), int(iy + dy)
+                    if not (0 <= nx < LX and 0 <= ny < LY):
+                        masks[b, n, a] = False
+                    elif self.env.occ[b, ny, nx] and h <= self.env.obs_h[b, ny, nx]:
+                        masks[b, n, a] = False
+                    elif (nx, ny, int(h)) in occupied - {(int(ix), int(iy), int(h))}:
+                        masks[b, n, a] = False
+                masks[b, n, 4] = h < len(HEIGHTS) - 1 and (int(ix), int(iy), int(h + 1)) not in occupied
+                masks[b, n, 5] = h > 0 and (int(ix), int(iy), int(h - 1)) not in occupied
+        return masks
 
     # ============================================================
     # 单 env view: 给 manual_reward 当 SearchEnv-like 接口
@@ -231,17 +256,17 @@ class BatchedMultiAgentWrapper:
         uav_iy = uav_pos[..., 1]
         uav_h = uav_pos[..., 2]
 
-        # (1) 自身状态 3 维: (n, N_UAV, 3)
-        own = np.stack([
-            uav_ix / (LX - 1),
-            uav_iy / (LY - 1),
-            uav_h / max(1, len(HEIGHTS) - 1),
-        ], axis=-1).astype(np.float32)
+        # (1) 公式 (18) 的 p(t)：每个 Actor 都接收所有 UAV 位置。
+        all_pos = uav_pos.astype(np.float32).copy()
+        all_pos[..., 0] /= (LX - 1)
+        all_pos[..., 1] /= (LY - 1)
+        all_pos[..., 2] /= max(1, len(HEIGHTS) - 1)
+        all_pos = np.repeat(all_pos.reshape(n, 1, N_UAV * 3), N_UAV, axis=1)
 
         # (2)(3) 5x5 patch: geum (25) + zeta (25)
         # 用 numpy 一次性 broadcast scatter (不 Python loop)
         geum_patches = np.zeros((n, N_UAV, self.PATCH, self.PATCH), dtype=np.float32)
-        zeta_patches = np.zeros((n, N_UAV, self.PATCH, self.PATCH), dtype=np.float32)
+        es_patches = np.zeros((n, N_UAV, self.PATCH, self.PATCH), dtype=np.float32)
         for h_level in range(3):
             mask = (uav_h == h_level)        # (n, N_UAV)
             for ddy, ddx in SENSE_OFFSETS_BY_H[h_level]:
@@ -254,22 +279,15 @@ class BatchedMultiAgentWrapper:
                 src_y = np.clip(tgt_y, 0, LY - 1)
                 src_x = np.clip(tgt_x, 0, LX - 1)
                 env_idx = np.arange(n)
-                z_at = zeta[env_idx[:, None], src_y, src_x]      # (n, N_UAV)
+                z_at = zeta[env_idx[:, None], src_y, src_x]
+                o_at = occ[env_idx[:, None], src_y, src_x]
                 g_at = geum[env_idx[:, None], src_y, src_x]
                 # 一次性 broadcast scatter (无效位置写 0)
-                zeta_patches[..., py, px] = np.where(valid, z_at, 0.0)
+                es_at = np.where(z_at == 1, 1.0, np.where(o_at == 1, -1.0, 0.0))
+                es_patches[..., py, px] = np.where(valid, es_at, 0.0)
                 geum_patches[..., py, px] = np.where(valid, g_at, 0.0)
         geum_flat = geum_patches.reshape(n, N_UAV, -1)
-        zeta_flat = zeta_patches.reshape(n, N_UAV, -1)
-
-        # (4) 最近障碍: 3 维
-        obstacle = self._nearest_obstacle_batch(uav_ix, uav_iy, occ)   # (n, N_UAV, 3)
-
-        # (5) 最近 UAV: 3 维
-        uav_other = self._nearest_uav_batch(uav_ix, uav_iy, uav_h, uav_pos)  # (n, N_UAV, 3)
-
-        # (6) 自身能量
-        energy = self.energy[..., None]                                # (n, N_UAV, 1)
+        es_flat = es_patches.reshape(n, N_UAV, -1)
 
         # 拼接 (有/无 DPES)
         if self.use_dpes:
@@ -284,16 +302,21 @@ class BatchedMultiAgentWrapper:
                         px = self.HALF + ddx
                         tgt_y = uav_iy + ddy
                         tgt_x = uav_ix + ddx
-                        valid = (tgt_y >= 0) & (tgt_y < LY) & (tgt_x >= 0) & (tgt_x < LX)
+                        # DP_n(t) 只包含当前高度的 sensing domain。
+                        sense_valid = np.zeros_like(uav_h, dtype=bool)
+                        for h_level in range(3):
+                            if (ddy, ddx) in SENSE_OFFSETS_BY_H[h_level]:
+                                sense_valid |= (uav_h == h_level)
+                        valid = sense_valid & (tgt_y >= 0) & (tgt_y < LY) & (tgt_x >= 0) & (tgt_x < LX)
                         src_y = np.clip(tgt_y, 0, LY - 1)
                         src_x = np.clip(tgt_x, 0, LX - 1)
                         env_idx = np.arange(n)
                         dp_at = dp_field[env_idx[:, None], src_y, src_x]  # (n, N_UAV)
                         dp_patches[..., py, px] = np.where(valid, dp_at, 0.0)
             dp_flat = dp_patches.reshape(n, N_UAV, -1)
-            obs = np.concatenate([own, geum_flat, zeta_flat, dp_flat, obstacle, uav_other, energy], axis=-1)
+            obs = np.concatenate([all_pos, geum_flat, es_flat, dp_flat], axis=-1)
         else:
-            obs = np.concatenate([own, geum_flat, zeta_flat, obstacle, uav_other, energy], axis=-1)
+            obs = np.concatenate([all_pos, geum_flat, es_flat], axis=-1)
         return obs.astype(np.float32)
 
     def _nearest_obstacle_batch(self, uav_ix, uav_iy, occ):

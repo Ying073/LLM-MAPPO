@@ -63,12 +63,16 @@ def parse_args():
     p.add_argument("--llm-backend", type=str, default="canned",
                    choices=["canned", "deepseek-r1", "deepseek-v3"],
                    help="LRS 用的 LLM 后端 (M5.1: 接真 DeepSeek; key 从 DEEPSEEK_API_KEY 环境变量读)")
+    p.add_argument("--reward-source", choices=["paper-rbest", "manual", "lrs"],
+                   default="paper-rbest",
+                   help="训练奖励：论文附录 Eq.(34)、手工基线或在线 LRS 生成函数")
     p.add_argument("--out-name", type=str, default="training_curve.png",
                    help="训练曲线文件名")
     p.add_argument("--save-history", type=str, default=None,
                    help="保存训练历史为 .npz (用于跨实验对比); 文件名后缀 .npz")
     p.add_argument("--minibatch-size", type=int, default=256,
                    help="PPO minibatch size (M6: GPU 适合大 batch, 默认 256 替 v1 的 64)")
+    p.add_argument("--checkpoint-out", type=str, default=None)
     return p.parse_args()
 
 
@@ -105,13 +109,14 @@ def train(args):
 
     # ---- [M5] 先跑 LRS 拿 R^best ----
     lrs_reward_fn = None
-    if args.use_lrs:
+    if args.use_lrs or args.reward_source == "lrs":
         lrs_reward_fn = run_lrs(args)
 
     env = MultiAgentWrapper(
         seed=args.seed,
         use_dpes=args.use_dpes,
         lrs_reward_fn=lrs_reward_fn,
+        use_paper_reward=args.reward_source == "paper-rbest" and lrs_reward_fn is None,
     )
     obs_list = env.reset()
     obs_dim = obs_list[0].shape[0]
@@ -120,12 +125,13 @@ def train(args):
     print(f"[init] N_UAV={N_UAV}, obs_dim={obs_dim}, global_dim={global_dim}, "
           f"act_dim=6, rollout_len={args.rollout_len}, device={args.device}, "
           f"use_dpes={args.use_dpes}, use_lrs={args.use_lrs}, "
-          f"reward_path={'lrs' if lrs_reward_fn is not None else 'manual'}")
+          f"reward_path={'lrs' if lrs_reward_fn is not None else args.reward_source}")
 
     mappo = MAPPO(
         obs_dim=obs_dim,
         global_dim=global_dim,
         act_dim=6,
+        n_agents=N_UAV,
         device=args.device,
         minibatch_size=args.minibatch_size,
     )
@@ -147,10 +153,12 @@ def train(args):
 
         for t in range(args.rollout_len):
             # (1) 选动作
-            actions, logp = mappo.select_actions(obs_list)
+            action_masks = env.get_action_masks()
+            actions, logp = mappo.select_actions(obs_list, action_masks)
 
             # (2) 算 value (给 GAE 用)
-            value = mappo.get_value(env.get_global_state())
+            current_global_state = env.get_global_state()
+            value = mappo.get_value(current_global_state)
 
             # (3) 推进一步
             next_obs_list, shared_r, done, info = env.step(actions)
@@ -159,16 +167,17 @@ def train(args):
             per_agent_r = info["per_agent_reward"]
             buffer.store(
                 obs=obs_list,
-                global_s=env.get_global_state(),
+                global_s=current_global_state,
                 actions=actions,
                 logp=logp,
                 reward=per_agent_r,
                 done=done,
                 value=value,
+                action_mask=action_masks,
             )
 
             ep_reward += shared_r
-            ep_searched = info["searched_count"]
+            ep_searched = info["found_count"]
             ep_au_final = info["area_uncertainty"]
             obs_list = next_obs_list
 
@@ -236,6 +245,12 @@ def train(args):
             config=np.array([args.use_dpes, args.use_lrs]),
         )
         print(f"[train] saved raw history to {hist_path}")
+
+    if args.checkpoint_out:
+        checkpoint_path = os.path.abspath(args.checkpoint_out)
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        mappo.save_checkpoint(checkpoint_path)
+        print(f"[train] saved checkpoint to {checkpoint_path}")
 
 
 if __name__ == "__main__":

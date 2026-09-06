@@ -1,170 +1,34 @@
-# M12 云 GPU 运行手册（B 方案：8 seed × 3000 ep）
+# AutoDL 运行说明（论文对齐版）
 
-> 目标：把 M11（真 DeepSeek-R1 当 LRS 后端，但只有单 seed 150 ep）**升级成 8 seed 闭环**，
-> 复现论文 §V 三件套（DPES + LRS + MAPPO）在多个独立训练 seed 下的 mean±std 曲线。
->
-> **B 不是论文级复现**——论文是 28 000 ep × 8 seed，我们这里 **3000 ep × 8 seed**（约 1/9）。
-> 定位是「**机制验证 + 规模化趋势**」：能看出 R^best 在更多 ep 下是否收敛、8 seed 方差多大、
-> 以及 vs Canned 的真实差距。**不代表 71.4% / 100% 这两个 headline 数字。**
+服务器约定：SSH Host 为 `autodl`，项目固定放在 `/root/autodl-tmp/projects/llm-mappo`。GPU 检查、环境安装、训练和日志读取均在该服务器完成；本机不运行 CUDA 训练。
 
----
+## 当前协议
 
-## 操作清单 (5 步直接抄)
+- 训练：一个 MAPPO 策略，默认先做 3,000 episode 的 pilot；正式复现为 28,000 episode。
+- 场景：20×20 网格、7 架 UAV、20 个障碍、15 个动态目标、每 episode 最多 500 步。
+- 网络与优化：每架 UAV 独立 Actor，集中式 Critic；两层 64 单元 ReLU；学习率 0.0002，折扣因子 0.95。
+- 奖励：直接使用论文附录 Eq. (34) 的 `R_best`，不再把历史 LRS 缓存冒充正式奖励。
+- DPES：参数采用表 II；Actor 只接收本机感知域中的 DP。
+- 测试：训练结束后冻结策略，在 8 个独立环境随机种子上测试，不在测试阶段继续学习。
 
-| 步骤 | 在哪 | 命令 (复制粘贴) | 耗时 |
-|---|---|---|---|
-| **①** | **本地 PowerShell** | `scp -r -P <端口> "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现" root@connect.cqal.seetacloud.com:/root/`<br>把 `<端口>` 换成租机页给的端口（AutoDL 必须带 `-P 端口`） | < 1 min (40MB) |
-| **②** | **云端 SSH** | 见 §二 step 2 的 `pip install torch` (CUDA) + `pip install numpy matplotlib` | 5–8 min |
-| **③** | **云端 SSH** | `cd /root/llm_mappo && bash cloud/cloud_run.sh` | **~3.6 h** |
-| **④** | **本地 PowerShell** | `scp -r -P <端口> root@connect.cqal.seetacloud.com:/root/LLM-MAPPO_论文阅读与复现/reproduction/m12_results/ "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现/reproduction/m12_results/"` | < 1 min |
-| **⑤** | **本地** | 见 §六 step 3: 用 `reproduction/plot_8seed.py` 出图 + 写报告 | 5 min |
-
-**⚠ 诚实风险提示**：当前 `train_batched.py` **没有 checkpoint/resume**。
-- 跑到第 4 个 seed 时如果断电/出 bug,前 3 个 seed 没事,但**第 4-8 seed 全丢**。
-- 补救: `bash cloud/cloud_run.sh` 不会自动跳过已跑完的 seed——**手动**改 `cloud_run.sh` 里的 `for i in 0 1 2 3 4 5 6 7` 为 `for i in 3 4 5 6 7`(从第 4 个 seed 重跑)。
-- 单 seed ~27 min,补 8 seed 全重也只要 ~3.6 h,**最坏情况再付一份 ~¥7**,不会血本无归。
-
----
-
-## 一、跑什么、跑多久、多少钱（请你先对齐再下单）
-
-| 项 | 值 |
-|---|---|
-| 种子数 | 8 个独立训练 seed（0–7，各一颗独立网络） |
-| 每 seed ep | 3000 |
-| batch_envs | 16（并行 env，只加速采样，**不是** 8 个 seed） |
-| 单 seed outer | 3000 / 16 ≈ **188 outer** |
-| 单 seed 耗时 | 188 × ~8.7s（4090D 实测外推）≈ **27 min** |
-| **全部 8 seed** | ≈ **3.6 h GPU** |
-| LRS K=5 | **不重跑**（用 M11 的 R^best 缓存，无需 DeepSeek API） |
-| 参考费用 | 4090D ¥1.88/h × 3.6h ≈ **¥7** |
-
-关键点：云端跑的是 **LRS 已经定好的 R^best**，所以 **不需要 API key、不烧 LLM 调用费**。
-代价是我们**看不到** LRS 迭代本身的动态（M11 已经看过）。
-
-### 论文与我们的真实差距（务必诚实写进报告）
-
-| 维度 | 论文 | 我们（B 方案） | 差距 |
-|---|---|---|---|
-| 单 seed ep | 28 000 | 3 000 | **9.3 ×** |
-| seed 数 | 8 | 8 | 持平 ✅ |
-| LLM 后端 | DeepSeek-R1-7B | DeepSeek-R1（真） | 持平 ✅ |
-| headline 数字 | 71.4% / 100% | **不可报** | 需 30k + 全部找不到目标场景 |
-
----
-
-## 二、云端安装依赖
-
-云 GPU 通常是 Ubuntu + CUDA 镜像。先建 venv 装依赖（不会污染系统）：
+## 运行
 
 ```bash
-# 1. 装 python venv (若无)
-sudo apt update && sudo apt install -y python3-venv
+ssh autodl
+cd /root/autodl-tmp/projects/llm-mappo
+source /root/mappo_venv/bin/activate
 
-# 2. 建 venv 并激活
-python3 -m venv ~/mappo_venv
-source ~/mappo_venv/bin/activate
-
-# 3. 装依赖 (pip 最快; 云端无需 conda)
-pip install --upgrade pip
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-pip install numpy matplotlib
-```
-
-> `--index-url cu121` 会装带 CUDA 的 torch；不想指定就 `pip install torch`（可能装 CPU 版，
-> 跑不了 GPU）。**建议一定要指定 CUDA 版本。**
-
-验证 GPU 可用：
-
-```bash
-python -c "import torch; print('cuda:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
-```
-
----
-
-## 三、上传代码 + 数据
-
-在**本地 PowerShell**（不要用 `bash`，Windows 的 bash 是 WSL，且无 rsync）用 Windows 自带 `scp` 上传整个项目文件夹。**必须先知道端口**（AutoDL 的 SSH 是 `ssh -p <端口> root@connect.cqal.seetacloud.com`，端口在租机页“SSH 登录指令”里）：
-
-```powershell
-# 本地 PowerShell，把 <端口> 换成你的（如 23868）
-scp -r -P <端口> "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现" root@connect.cqal.seetacloud.com:/root/
-```
-
-上传后，云端 `/root/` 下会出现一个 `LLM-MAPPO_论文阅读与复现/` 文件夹（保留中文名没关系，cloud_run.sh 用相对路径）。
-
-**重要：不要漏掉这两个文件**（cloud_run.sh 依赖它）：
-- `reproduction/lrs_runs/R1_K5_seed42_Rbest_fig11.py` —— M11 的 R^best（LRS 缓存）
-- `reproduction/batched_m5_8seed.npz` —— Canned 8-env 基线（可选，用来做对比图；没有也能跑，只出 8-seed 图）
-
-登录云主机：
-
-```bash
-ssh -p <端口> root@connect.cqal.seetacloud.com
-cd "/root/LLM-MAPPO_论文阅读与复现"
-```
-
----
-
-## 四、跑脚本
-
-```bash
-source ~/mappo_venv/bin/activate
+# 机制与趋势验证（默认 3,000 episode）
 bash cloud/cloud_run.sh
+
+# 论文训练规模（28,000 episode；启动前应先确认 pilot 正常）
+RUN_KIND=formal bash cloud/cloud_run.sh
 ```
 
-脚本会自动：
-1. 校验 R^best 缓存文件存在
-2. 逐 seed（0–7）各训 3000 ep × 16 env，把每个 seed 的 history 存到 `reproduction/m12_results/batched_m12_seed{i}_3000.npz`
-3. 全部跑完自动出 `reproduction/m12_results/comparison_m12_8seed_vs_canned.png`
+每次运行都会创建带时间戳的新目录：`reproduction/paper_aligned_runs/<类型>_seed<种子>_<时间>/`。脚本故意不复用已有目录，因此不会覆盖历史结果。产物包括训练曲线、原始历史、策略 checkpoint、完整日志，以及 8-seed 固定策略测试 JSON。
 
-可以自定义参数：
+## 重要边界
 
-```bash
-SEEDS="0 1 2 3" bash cloud/cloud_run.sh            # 只跑 4 个 seed
-EPS_PER_SEED=6000 bash cloud/cloud_run.sh          # 每 seed 6000 ep
-CANNED_NPZ="" bash cloud/cloud_run.sh              # 不画 Canned 对比
-```
+3,000 episode 只是 pilot，不能报告论文的最终量化结论。只有 28,000 episode 的正式训练和 8-seed 固定策略测试完成后，才具备与论文主实验比较的训练规模。论文没有公开所有实现细节；奖励中 `chi_th`、高空条件概率与安全距离的数值仍是明确标注的复现假设，不能表述为作者原始参数。
 
-> 想更省电可后台跑：`nohup bash cloud/cloud_run.sh > m12_run.log 2>&1 &`
-> 但云主机一般只按小时计费，后台跑跟前台跑费用一样，建议直接前台盯着 log。
-
----
-
-## 五、下载结果
-
-跑完把 `m12_results/` 拉回本地（**本地 PowerShell**，用 `scp`）：
-
-```powershell
-# 本地执行，<端口>、<项目路径> 换成你的
-scp -r -P <端口> root@connect.cqal.seetacloud.com:/root/LLM-MAPPO_论文阅读与复现/reproduction/m12_results/ "C:\Users\lenovo\AI\大创\LLM-MAPPO_论文阅读与复现/reproduction/m12_results/"
-```
-
-拿到的东西：
-- `batched_m12_seed{0..7}_3000.npz`（8 份原始训练历史）
-- `comparison_m12_8seed_vs_canned.png`（8-seed mean±std vs Canned 对比图）
-
----
-
-## 六、诚实边界（写报告前必读）
-
-1. **B 方案跑不出论文的 71.4% / 100%**。那些数字是 28 000 ep + "全部找不到目标" 场景下的结果。
-   我们 3000 ep 只能看**趋势**（reward/area_unc 是否随 ep 收敛、8 seed 方差是否够小）。
-2. **8 seed 是独立训练 seed，不是 LRS seed**。论文协议是「LLM 离线生成一次 R^best，8 个训练 seed 共用」，
-   跟 cloud_run.sh 一致。我们 LRS 那一次是在 seed=42 下跑的，8 个训练 seed 与它无关。
-3. **Canned 基线那个 npz 是"1 个网络共享 8 个并行 env"，不是真 8 seed**。它当 trend baseline 可以，
-   但不能跟真 8-seed 的 mean±std 直接做严格统计检验。真要严格对比，得让 Canned 也跑 8 个独立 seed。
-4. **如果时间/预算允许，你想补论文级**，就把 `EPS_PER_SEED` 提到 28 000，并确保场景是"全部目标找不到"
-   的困难配置——但那是 8 × 188 × 15 ≈ **80h GPU**（¥150+），需另行评估。
-
----
-
-## 七、M12 文件清单
-
-| 文件 | 作用 |
-|---|---|
-| `cloud/cloud_run.sh` | 一键跑 8 seed × 3000 ep（共用 R^best 缓存） |
-| `reproduction/plot_8seed.py` | 8 seed mean±std vs Canned 出图 |
-| `reproduction/train_batched.py` | 新增 `--lrs-cache` 选项（免重跑 LRS） |
-| `reproduction/lrs_runs/R1_K5_seed42_Rbest_fig11.py` | M11 的 R^best（LRS 缓存，8 seed 共用） |
-| `README_compare_with_paper.md` | 差距表同步更新（seed ✓ / LLM ✓ / ep 9.3×） |
+旧目录 `/root/LLM-MAPPO_论文阅读与复现` 以及 `m12_results` 属于历史实现，仅作追溯，不纳入新版结果。
