@@ -256,7 +256,7 @@ DEEPSEEK_API_KEY="sk-..." python reproduction/train_batched.py \
 | **起点 reward** | **-7182.3** | +107.9 |
 | 终点 reward | -3222.4 | +374.1 |
 | 起点 area_unc | 0.442 | 0.425 |
-| **终点 area_unc** | **0.00003 (搜完所有目标!)** | 0.082 (剩 8%) |
+| **终点 area_unc** | **0.00003 (几乎搜完)** | **0.0000 (完全搜完)** |
 | reward 量级 | -7000 ~ -3000 (激进 scale) | -200 ~ +400 (温和 scale) |
 | 总耗时 | 1473.4s | 175s |
 
@@ -267,9 +267,10 @@ DEEPSEEK_API_KEY="sk-..." python reproduction/train_batched.py \
    - R1 用了激进系数 `12.0 × target_value` (vs Canned 0.1~1.0 温和系数)
    - **reward 量级差 30-50×** 是 R1 真设计的硬证据
 
-2. **R1 设计让 MAPPO 把 area_unc 推到 0** (vs Canned 0.082)
-   - R1 设计的奖励对"搜完目标"这件事信号更强
-   - **说明 LLM 推理带来的奖励质量提升是可观测的**
+2. **两者最终都把 area_unc 推到 ~0, 完成度上差距很小** (诚实修正)
+   - 早期版本写 "Canned 剩 8% (0.082)", **是错的**: 0.082 只是 Canned outer-3 中间值, 到 outer-10 后稳定在 0.0000
+   - R1 0.00003 vs Canned 0.0000, 都在 144 ep 内搜完所有目标
+   - **所以"LLM 推理带来更大的奖励质量增益"在此 scale (150 ep) 下没被明显观测到**, 不能作为可写结论
 
 3. **R1 需要更多 ep 收敛**
    - 150 ep 时 R1 reward 还在爬升 (-7182 → -3222), Canned 已稳态 (+107 → +374)
@@ -294,7 +295,7 @@ DEEPSEEK_API_KEY="sk-..." python reproduction/train_batched.py \
 ### 11.7 这次跑证实 (新增可报内容)
 
 - ✅ "LLM 后端是真 DeepSeek-Reasoner" (不是 Canned 占位)
-- ✅ "R1 设计的 R^best 让 area_unc 推到 0" (vs Canned 0.082)
+- ✅ "R1 设计的 R^best 让 area_unc 推到 ~0" (0.00003; Canned 也到 0.0000) — 完成度无显著差距
 - ✅ "3 级降级编译 + try/except 工程机制验证有效"
 - ⚠️ "150 ep 对 R1 不够, 30k ep 才能稳态" (规模差距仍致命)
 
