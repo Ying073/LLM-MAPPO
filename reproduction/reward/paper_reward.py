@@ -47,7 +47,9 @@ def paper_reward_components(prev_geum, env, actions, *, chi_th=DEFAULT_CHI_TH,
     for n in range(N_UAV):
         for m in range(n + 1, N_UAV):
             distance = float(np.linalg.norm(xy[n] - xy[m]))
-            r_dis += d_safe - distance + 1.0
+            # The paper describes Rdis as a penalty for insufficient separation.
+            # Clamp each pairwise term so safe separation cannot become a reward.
+            r_dis += max(0.0, d_safe - distance + 1.0)
 
     return {
         "n_searched": n_searched,

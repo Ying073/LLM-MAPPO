@@ -175,6 +175,26 @@ class MAPPONetworkPaperAlignmentTests(unittest.TestCase):
 
 
 class PaperRewardTests(unittest.TestCase):
+    def test_dispersion_term_does_not_reward_separation_beyond_safe_distance(self):
+        from reproduction.reward.paper_reward import paper_reward_components
+
+        env = SearchEnv(seed=19)
+        env.uav_pos[:, :] = np.array([
+            [0, 0, 1],
+            [3, 0, 1],
+            [6, 0, 1],
+            [9, 0, 1],
+            [12, 0, 1],
+            [15, 0, 1],
+            [18, 0, 1],
+        ])
+        prev_geum = env.geum.copy()
+        actions = np.zeros(N_UAV, dtype=np.int64)
+
+        parts = paper_reward_components(prev_geum, env, actions, d_safe=1.0)
+
+        self.assertEqual(parts["dispersion_penalty"], 0.0)
+
     def test_equation_34_components_use_transition_not_replayed_action(self):
         from reproduction.reward.paper_reward import paper_reward_components
 
