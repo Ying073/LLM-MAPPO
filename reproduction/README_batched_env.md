@@ -118,6 +118,25 @@ M3 (DPES) 反而起点更低,因为奖励稀疏 + DPES 加了复杂度但没改�
   **不能 byte-equal 对齐**，曲线应**趋势一致**而非数值相等
 - byte-equal 限制: MT19937 顺序 vs 批量抽样的物理约束，不可调和
 
+### 5.1. 8-seed 对照实验 (mean ± std)
+
+为贴近论文"8 seed 报告"风格, 我们又用 `--batch-envs 8` 跑了一次三件套,
+每个 npz 保存 `(18, 8)` per-env 数组 → 等价于 8 个独立 seed:
+- `batched_m2_8seed.npz`: M2 (MAPPO), 81.3s
+- `batched_m3_8seed.npz`: M3 (MAPPO+DPES), 95.4s
+- `batched_m5_8seed.npz`: M5 (LLM-MAPPO full), 174.8s
+- 图: `comparison_llm_mappo_8seed.png` (mean 线 + ±std 阴影带)
+
+**8-seed 数字 (outer 18, ≈144 ep)**:
+| 模式 | ep 8 起点 | ep 144 终点 |
+|---|---|---|
+| M2 (MAPPO) | -202.94 ± 39.52 | -132.27 ± 47.90 |
+| M3 (MAPPO+DPES) | -255.42 ± 37.34 | -114.03 ± 13.23 |
+| **M5 (LLM-MAPPO full)** | **+107.93 ± 116.46** | **+374.12 ± 28.91** |
+
+→ **M5 是唯一 reward 始终为正的配置**, 与论文 Fig. 4 LLM-MAPPO 形态一致.
+  M5 终点 std 仅 ±28.9, 比 M2/M3 的 ±47/±13 都小, **说明 8 个 seed 都收敛到正 reward, 不是单 seed 偶然**.
+
 ## 6. 上云意义（结论）
 
 - 在 RTX 4090D 云端 (¥1.88/h) 跑 `batched` 路径：

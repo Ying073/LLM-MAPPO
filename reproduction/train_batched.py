@@ -122,6 +122,8 @@ def train(args):
     )
 
     rewards_hist, searched_hist, au_hist, actor_loss_hist, critic_loss_hist = [], [], [], [], []
+    # per-env arrays (shape: n_outer × n_envs) — 用于 8-seed mean±std
+    rewards_per_env, searched_per_env, au_per_env = [], [], []
 
     n_outer = max(1, args.total_episodes // n_envs)
     print(f"[init] total_episodes={args.total_episodes} ÷ n_envs={n_envs} → n_outer={n_outer} 个外迭代")
@@ -197,6 +199,10 @@ def train(args):
             rewards_hist.append(float(ep_reward.mean()))
             searched_hist.append(float(ep_searched.mean()))
             au_hist.append(float(ep_au_final.mean()))
+            # per-env (供 8-seed mean±std)
+            rewards_per_env.append(ep_reward.copy())
+            searched_per_env.append(ep_searched.copy())
+            au_per_env.append(ep_au_final.copy())
         else:
             rewards_hist.append(float(ep_reward))
             searched_hist.append(float(ep_searched))
@@ -242,8 +248,7 @@ def train(args):
 
     if args.save_history:
         hist_path = args.save_history if args.save_history.endswith(".npz") else args.save_history + ".npz"
-        np.savez_compressed(
-            hist_path,
+        save_kwargs = dict(
             rewards=np.asarray(rewards_hist, dtype=np.float32),
             searched=np.asarray(searched_hist, dtype=np.float32),
             au=np.asarray(au_hist, dtype=np.float32),
@@ -251,6 +256,12 @@ def train(args):
             critic_loss=np.asarray(critic_loss_hist, dtype=np.float32),
             config=np.array([args.use_dpes, args.use_lrs, n_envs]),
         )
+        # per-env arrays (供 8-seed mean±std 统计)
+        if use_batched and rewards_per_env:
+            save_kwargs["rewards_per_env"] = np.stack(rewards_per_env).astype(np.float32)
+            save_kwargs["searched_per_env"] = np.stack(searched_per_env).astype(np.float32)
+            save_kwargs["au_per_env"] = np.stack(au_per_env).astype(np.float32)
+        np.savez_compressed(hist_path, **save_kwargs)
         print(f"[train] saved raw history to {hist_path}")
 
 
