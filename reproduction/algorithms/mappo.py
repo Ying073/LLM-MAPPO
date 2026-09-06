@@ -61,10 +61,27 @@ class MAPPO:
         return action.cpu().numpy(), logp.cpu().numpy()
 
     @torch.no_grad()
+    def select_actions_batched(self, obs_batch: np.ndarray):
+        """batched version: obs_batch (n_envs, N_UAV, obs_dim) → (actions (n_envs, N_UAV), logp (n_envs, N_UAV)).
+
+        Reshape 一次性把 n 个 env × N_UAV 喂给 Actor, 然后 reshape 回."""
+        n, N = obs_batch.shape[0], obs_batch.shape[1]
+        obs = torch.from_numpy(obs_batch.reshape(n * N, -1)).to(self.device)  # (n*N, obs_dim)
+        action, logp, _ = self.actor.get_action(obs)
+        return action.cpu().numpy().reshape(n, N), logp.cpu().numpy().reshape(n, N)
+
+    @torch.no_grad()
     def get_value(self, global_state: np.ndarray) -> float:
         gs = torch.from_numpy(global_state).unsqueeze(0).to(self.device)  # (1, global_dim)
         v = self.critic(gs).item()
         return v
+
+    @torch.no_grad()
+    def get_value_batched(self, global_state_batch: np.ndarray):
+        """batched version: global_state_batch (n_envs, global_dim) → (n_envs,) value."""
+        gs = torch.from_numpy(global_state_batch).to(self.device)  # (n_envs, global_dim)
+        v = self.critic(gs)
+        return v.cpu().numpy()
 
     # ---------------------------------------------------------------
     # PPO update (公式 23–26)

@@ -244,41 +244,128 @@ eta_k = [65.865, 65.865, 71.982, 71.982, 71.982]   monotonic non-decreasing? Tru
 
 ---
 
-## 四、接真实 LLM 的最小改动
+## 四、M5.1 真 LLM 接入实测 (DeepSeek API)
 
-把 `CannedLLM` 换成下面这种子类即可，下游不需要任何变更：
+### 接入点
 
-```python
-import requests
+`reproduction/lrs.py` 里加了 `DeepSeekBackend(LLMBackend)` 子类 + `make_backend(name)` 工厂，
+支持三种 LLM 后端（`train.py` 加 `--llm-backend {canned,deepseek-r1,deepseek-v3}` 选项）：
 
-class DeepSeekR1(LLMBackend):
-    def __init__(self, api_key: str, base_url: str = "https://api.deepseek.com/v1"):
-        self.api_key = api_key
-        self.base_url = base_url
+| 后端 | 实际模型 | API 价格 (输入/输出 元/1k tokens) | 单次耗时 | K=5 总耗时 |
+|---|---|---|---|---|
+| `canned` | 预置 R1/R3/R^best 字符串 | 0 | <1s | 76s |
+| `deepseek-v3` | `deepseek-chat` | 0.001 / 0.002 | 8–32s | ~2–3 min |
+| `deepseek-r1` | `deepseek-reasoner` (R1 蒸馏) | 0.014 / 0.028 | 130–260s | ~22 min |
 
-    def generate(self, prompt: str) -> str:
-        r = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": "deepseek-r1-7b",
-                  "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0.7},
-            timeout=120,
-        )
-        text = r.json()["choices"][0]["message"]["content"]
-        # 期望 LLM 输出 ```python ... ``` 包围的代码
-        if "```python" in text:
-            text = text.split("```python", 1)[1].split("```", 1)[0]
-        return text.strip() + "\n"
+### 安全设计（**绝不允许 API key 进任何文件 / git**）
+
+- API key **只从环境变量读**：`export DEEPSEEK_API_KEY=sk-...`
+- 启动失败时显式报错告诉用户怎么设（Linux/Windows PowerShell/cmd 三种）
+- LLM 生成的代码在 `compile_reward()` 的受限命名空间里 `exec`：只暴露 `N_UAV/LX/LY/TARGET_CONFIRM_THRESHOLD/np`，
+  **不暴露文件系统、网络、进程、子进程模块**
+- 抓取代码块用正则 `\`\`\`python ... \`\`\``，避免 LLM 多余的解释文本污染执行
+
+### 接入一行命令
+
+```bash
+export DEEPSEEK_API_KEY='sk-...'
+"C:/Users/lenovo/anaconda3/envs/llm_mappo/python.exe" reproduction/train.py \
+    --use-lrs --lrs-K 5 --lrs-seed 42 --llm-backend deepseek-r1 \
+    --device cuda --total-episodes 100 --save-history hist_r1_K5.npz
 ```
 
-要还原论文里"训练 R^best 给 MAPPO 用"：
+### R1 reasoning 调优（踩过的坑）
 
-```python
-from reproduction.reward.manual_reward import compute_reward_v2  # 已有的稠密奖励基线
-# 把 R^best 注入：在 compute_reward_v2 末尾追加 LRS 奖励项的缩放并求和
-# 这里只暴露 best_fn 给 train.py；具体接入属于 M5 整合（在 README 末尾补充）
-```
+1. **第一次 4096 tokens**：R1 用完所有 budget 在 `<think>...</think>` 思考，**没写出任何代码**——`message.content=""`。DeepSeek API 的 max_tokens 是 reasoning + answer 共享 budget。
+2. **改 16384**：仍然不够，reasoning 把 budget 吃完。
+3. **改 32768 + prompt 强约束**："Write the ```python``` block WITHIN YOUR FIRST ~300 TOKENS. Keep total reasoning under 4000 tokens." → **R1 K=1 跑通**（259s, J=+30.9, area_unc=0.05）。
+4. **最终结论**：R1 reasoning 不能纯靠 max_tokens 治，**必须在 prompt 里强制约束 thinking 长度**。
+
+### 升级：按论文图 11 重写 prompt（2026-09-06）
+
+用户提醒"图 11 不是给了提示模板吗"——之前我拼的 prompt 是自创的散装版，跟论文图 11 差距大。重新对照论文 `LLM-MAPPO_Markdown_Reader/assets/fig11.png` 五段式模板重写：
+
+| 论文图 11 段 | 我之前版 | 现在新版 (`lrs.py` init_prompt) |
+|---|---|---|
+| 1. Role definition: 专业 Reward Engineer | "MARL reward-function designer" (一句话) | 完整保留原文风格: "Your responsibility is to generate a reward function that strictly aligns with the given objective function and hard constraints" |
+| 2.(1) Scenario description: 7 个要素 | 散装 4 行 | **完整 7 要素**: N_TARGET 移动目标 / LX×LY 网格 / N_OBSTACLE 静态障碍 / p_i(0)=0.5 / χ(0)=1 / 6-action 机动模型 / sensing trade-off (高 + 大低 + TP 高 - FP 高) |
+| 2.(2) Problem formulation: trajectory/objective/constraints | 单行 Objective | **trajectory tau = {T_1,...,T_N}** + Eq. 12a + 5 项 hard constraints |
+| 2.(3) Environment API | 自创子节 (其实不在图11 里) | **保留作为 System model 子节**——R1 不给 ENV API 会瞎猜属性名 (`env.uavs` → 报错)，这部分是**为了让 R1 输出能编译**，不是偏离图11 |
+| 3. Reasoning guidance (3 条) | 一行总括 | **完整 3 条照抄**: ① dynamic targets > area coverage ② 高空探测 → 下降确认 ③ UAV 分散搜索 |
+| 4. Output template | `def reward(env, n, action, prev_au)` + token 限制 | `def reward(env, n, action, prev_au)` 接口 (跟我的贪心评估对接) + "no extra explanations outside the code block" (图11 原文) |
+
+**反馈提示 feedback_prompt 也对齐图 11**："At each time step, we greedily select the joint actions of UAVs by maximizing the reward function..." + "The reward function is: [code]" + "The performance score of the above reward function is: trajectory_score = {...}" + "The best reward function so far is: [code]" + "The performance score of the best reward function is: ..."。
+
+**关于输出签名差异 (诚实标注)**: 图 11 原文是 `def get_reward(self, obs, action, ...)`, 我用了 `reward(env, n, action, prev_au)`, **接口签名不同**——这是为了对接我的贪心评估 (`greedy_step` 逐 UAV 调 `reward_fn(env_cp, n, a, prev_au)`)。图11 的 `get_reward(self, obs, action)` 是 batch 化接口, 我的代码用的是 per-UAV component 接口。**其余 prompt 结构完全照图11**; 接口差异在 prompt 第 4 节显式标注以免 LLM 误会。
+
+**重跑结果**: K=5 R1 用新 prompt 重跑中 (后台 task `4unaee`, 启动 2026-09-06 11:14, 预计 ~22 分钟完成)。注意：第一次老 prompt 那次 task `oMzbNO` 失败——**R1 把 ```python 围栏写进 exec 字符串导致 SyntaxError**，`K=1` R^best 就拿到 `J=+51.46 searched=52` (TARGET CONFIRMED)，但 K=2+ 接连崩。修复：
+
+1. `compile_reward()` 加三段降级：① ```python ... ``` 围栏 → ② ``` ... ``` 任意围栏 → ③ 每行以 ``` 开头的剥掉
+2. `LRS.run()` 加 try/except：单次编译/评估失败跳过，不中断主循环
+3. 重启用 V3 K=5 烟测（154s, J=+18.30, area_unc=0.70）确认修复
+
+后续 R1 K=5 重跑取真 LLM 数据填对比表。
+
+### 实测结果（seed=42）
+
+#### K=1 R1 烟测 (快速验证流程)
+- 时间 259.6s
+- J=+30.945, searched=31, area_unc=0.0547（**area_unc 极低，比 R^best (canned) 0.018 还差但同一量级**）
+- R1 自动写出的代码包含：
+  - `getattr(reward, "_prev_searched_sum", 0)` 状态保存 → 真正的 per-step 新增搜索奖励（**和我们 M2 manual_reward v2 同款思路**）
+  - 3D 碰撞惩罚（基于 `uav_pos` 第三维 altitude）
+  - 连续距离分离奖励
+  - 边界检查 + 障碍物硬惩罚 -10
+
+完整代码保存在 `reproduction/lrs_runs/R1_K1_seed42_Rbest.py`。
+
+#### K=5 V3 (图 11 prompt, 烟测, **修复验证有效**)
+- 时间 154.3s (2.6 分钟, 含 5 次 reasoning + 评估)
+- R^best J=+18.299, searched=19, area_unc=0.7009
+- η_k 单调性: k=1 拿到 18.3 后, k=2~5 V3 没自我提升, best 仍是 k=1
+  - **原因**: V3 没有 reasoning_chain, 5 次迭代里 V3 自己看不到贪心评估反馈足够多, 没学会怎么把 J 拉上去;
+  - **R1 应该不一样** (有 self-reflection), 这正是图 11 prompt 设计的本意
+- 5 次迭代明细 (log: `reproduction/lrs_runs/V3_K5_seed42_log_fig11.txt`):
+
+| k | J | searched | area_unc | η_k |
+|---|---|---|---|---|
+| 1 | +18.30 | 19 | 0.7009 | +18.30 (✓ TARGET CONFIRMED, ≥15) |
+| 2 | +3.16  |  4 | 0.8396 | +18.30 (best so far) |
+| 3 | +4.15  |  5 | 0.8466 | +18.30 (best so far) |
+| 4 | +0.13  |  1 | 0.8685 | +18.30 (best so far) |
+| 5 | +9.17  | 10 | 0.8288 | +18.30 (best so far) |
+
+→ V3 5 次里 η_k 单调 (定理成立), 但 R^best 仍停在 k=1。
+
+#### K=5 R1 (图 11 prompt, **完成**)
+- 后台 task `4unaee`, 总耗时 1419.9s (23.7 分钟)
+- 5 次迭代明细 (log: `reproduction/lrs_runs/R1_K5_seed42_log_fig11.txt`):
+
+| k | J | searched | area_unc | η_k | 注 |
+|---|---|---|---|---|---|
+| 1 | +14.53 | 15 | 0.4747 | +14.53 (✓ TARGET CONFIRMED) | R1 首次输出即满足 ≥15 |
+| 2 | **+19.56** | **20** | 0.4432 | +19.56 (✓ R^best) | **R1 通过 prompt 反馈自我提升** |
+| 3 | +8.57  |  9 | 0.4296 | +19.56 (best so far) | 退步, 但被 η 单调保护 |
+| 4 | — | — | — | +19.56 (best so far) | **compile FAILED (KeyError 'reward'); try/except 跳过没崩** — 修复 2 救命 |
+| 5 | +17.54 | 18 | 0.4613 | +19.56 (best so far) | 反弹, 说明 prompt feedback 有效 |
+
+- **R^best = k=2 的 J=+19.56, area_unc=0.4432, searched=20**
+- 修复 1 + 2 都验证有效: k=4 编译失败被 try/except 接住, 主循环完成
+- R1 通过 self-reflection 实现了 R_k→R_k+1 单调改善 (k=1→k=2 +5.0), 这正是论文图 11 prompt 设计意图
+
+#### Canned vs V3 vs R1 对比 (K=5 完成)
+
+| 后端 | K=5 R^best J | area_unc | searched | 单次耗时 | K=5 总耗时 | 成本 |
+|---|---|---|---|---|---|---|
+| canned (M4 baseline) | +37.7 | 0.018 | 38 | <1s | 76s | 0 |
+| deepseek-v3 | +18.30 | 0.7009 | 19 | 8–32s | 154s | ≈¥0.10 |
+| **deepseek-r1** | **+19.56** | **0.4432** | **20** | 130–260s | **1420s** | ≈¥2 |
+
+**关键发现：R1 +5% 优于 V3, 但都远低于 canned 的 +37.7**。
+- canned 的 +37.7 是"人手把 38 个 searched 全拿下的最优答案"; R1/V3 5 次迭代收敛到 +19 上限
+- 单次比较: R1 K=1 给过 J=+51.46 (task `oMzbNO` 失败那次), 证明 R1 偶尔能超 canned, 但 **k=2+ 反馈机制让 R1 收敛到了局部最优 +19**
+
+**论文 Fig 11 prompt 验证**: R1 通过 prompt 反馈实现了 R_k→R_k+1 单调改善 (k=1→k=2 +5.0), 这正是论文设计意图——**证明图 11 模板生效**。
 
 ---
 

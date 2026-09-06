@@ -60,6 +60,9 @@ def parse_args():
                    help="LRS 主循环迭代次数 (算法 2 的 K)")
     p.add_argument("--lrs-seed", type=int, default=None,
                    help="LRS 用的种子；默认与 --seed 相同")
+    p.add_argument("--llm-backend", type=str, default="canned",
+                   choices=["canned", "deepseek-r1", "deepseek-v3"],
+                   help="LRS 用的 LLM 后端 (M5.1: 接真 DeepSeek; key 从 DEEPSEEK_API_KEY 环境变量读)")
     p.add_argument("--out-name", type=str, default="training_curve.png",
                    help="训练曲线文件名")
     p.add_argument("--save-history", type=str, default=None,
@@ -74,14 +77,20 @@ def run_lrs(args):
     
     对应论文 §IV-D: 'Before MAPPO training, the offline LRS scheme generates
     and optimizes the reward function' —— 训练前 LRS 离线完成。
+
+    Args:
+        args.llm_backend: "canned" / "deepseek-r1" / "deepseek-v3"
+                          真 LLM 时从环境变量 DEEPSEEK_API_KEY 读 key (绝不写文件)
     """
-    from reproduction.lrs import LRS, compile_reward
+    from reproduction.lrs import LRS, compile_reward, make_backend
     from reproduction.env.search_env import SearchEnv
 
     lrs_seed = args.lrs_seed if args.lrs_seed is not None else args.seed
-    print(f"[lrs] starting offline LRS K={args.lrs_K}, seed={lrs_seed} ...", flush=True)
+    backend = make_backend(args.llm_backend)
+    print(f"[lrs] starting offline LRS K={args.lrs_K}, seed={lrs_seed}, "
+          f"backend={type(backend).__name__} ({args.llm_backend}) ...", flush=True)
     env = SearchEnv(seed=lrs_seed)
-    lrs = LRS(K=args.lrs_K, seed=lrs_seed)
+    lrs = LRS(llm=backend, K=args.lrs_K, seed=lrs_seed)
     t0 = time.time()
     best_fn, best_code, best_J, best_metrics = lrs.run(env, seed=lrs_seed)
     dt = time.time() - t0

@@ -1,0 +1,9 @@
+K=5 R1 deepseek-reasoner seed=42 prompt=Fig11 total=1419.9s
+R^best J=+19.557  area_unc=0.4432  searched=20
+
+iterations:
+  k=1: J=+14.525  searched=15  area_unc=0.4747  eta_k=+14.525
+  k=2: J=+19.557  searched=20  area_unc=0.4432  eta_k=+19.557
+  k=3: J=+8.570  searched=9  area_unc=0.4296  eta_k=+19.557
+  k=4: J=-inf  searched=0  area_unc=1.0000  eta_k=+19.557
+  k=5: J=+17.539  searched=18  area_unc=0.4613  eta_k=+19.557

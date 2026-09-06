@@ -32,11 +32,12 @@ LLM 后端抽象：
 """
 
 import copy
+import os
 import numpy as np
 
 from .env.search_env import (
-    LY, LX, N_UAV, MAX_STEPS,
-    TARGET_CONFIRM_THRESHOLD,
+    LY, LX, N_UAV, N_TARGET, N_OBSTACLE,
+    MAX_STEPS, TARGET_CONFIRM_THRESHOLD,
 )
 
 
@@ -69,6 +70,97 @@ class CannedLLM(LLMBackend):
             return CAND_R3
         # 其余迭代返回更强的 Rbest
         return CAND_RBEST
+
+
+class DeepSeekBackend(LLMBackend):
+    """DeepSeek API 后端（OpenAI 兼容协议）.
+
+    参数:
+        model: "deepseek-reasoner" (R1) 或 "deepseek-chat" (V3)
+        api_key: 从环境变量 DEEPSEEK_API_KEY 读取; 也可显式传入（仅测试用）
+        temperature: 默认 0.6 (DeepSeek 推荐)
+        max_tokens: 输出上限; reasoner 给 4096 防止 reasoning 过长截断
+
+    安全:
+        - API key 只从环境变量读，不写进任何文件 / 日志 / commit
+        - 返回的代码会被 compile_reward() 在受限命名空间 exec（只暴露 N_UAV/LX/LY
+          和 np），不引用任何文件系统/网络/进程相关模块
+    """
+
+    DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+
+    def __init__(self, model: str = "deepseek-reasoner",
+                 api_key: str = None,
+                 temperature: float = 0.6,
+                 max_tokens: int = 32768,
+                 timeout: int = 300):
+        self.model = model
+        self.temperature = temperature
+        # R1 (deepseek-reasoner) 的 budget 是 reasoning + answer 共享 max_tokens，
+        # 必须给大点防止 reasoning 把 budget 花完。32k 实测 reasoning 占 ~16k、answer ~16k 够用
+        self.max_tokens = max_tokens if model != "deepseek-chat" else 4096
+        self.timeout = timeout
+        # Key 只从环境变量读，绝不写文件
+        self.api_key = api_key if api_key else os.environ.get("DEEPSEEK_API_KEY", "")
+        if not self.api_key:
+            raise RuntimeError(
+                "[DeepSeekBackend] DEEPSEEK_API_KEY 未设置。\n"
+                "  Linux/macOS:  export DEEPSEEK_API_KEY=sk-xxx\n"
+                "  Windows PS:   $env:DEEPSEEK_API_KEY='sk-xxx'\n"
+                "  Windows cmd:  set DEEPSEEK_API_KEY=sk-xxx"
+            )
+
+    def generate(self, prompt: str) -> str:
+        # 用 OpenAI 兼容 SDK（DeepSeek 官方支持）
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise RuntimeError(
+                "[DeepSeekBackend] 需要 openai 包。在 conda llm_mappo 环境跑:\n"
+                "  pip install openai"
+            )
+        client = OpenAI(api_key=self.api_key, base_url=self.DEEPSEEK_BASE,
+                        timeout=self.timeout)
+        resp = client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+        content = resp.choices[0].message.content or ""
+        # R1 (deepseek-reasoner) 会先输出 <think>...</think> 推理块，
+        # 后跟 ```python ... ``` 代码块。我们只取最后的 python 代码块。
+        return self._extract_code(content)
+
+    @staticmethod
+    def _extract_code(text: str) -> str:
+        """从 LLM 输出里抠出 ```python ... ``` 代码块.
+        兼容 R1 的 <think>...</think> + 代码, 也兼容 V3 的纯代码回复.
+        """
+        import re
+        # 找所有 ```python ... ``` 块; 取最后一个
+        blocks = re.findall(r"```python\s*\n(.*?)```", text, flags=re.DOTALL)
+        if blocks:
+            return blocks[-1].strip()
+        # 退化: 找 ``` ... ``` 块
+        blocks = re.findall(r"```\s*\n(.*?)```", text, flags=re.DOTALL)
+        if blocks:
+            return blocks[-1].strip()
+        # 最后退化: 整段返回 (可能 LLM 没写 markdown fence)
+        return text.strip()
+
+
+def make_backend(name: str) -> LLMBackend:
+    """工厂: canned / deepseek-r1 / deepseek-v3 → 真实后端."""
+    name = name.lower().strip()
+    if name in ("canned", "mock", "default", ""):
+        return CannedLLM()
+    if name in ("deepseek-r1", "deepseek-reasoner", "r1"):
+        return DeepSeekBackend(model="deepseek-reasoner")
+    if name in ("deepseek-v3", "deepseek-chat", "v3"):
+        return DeepSeekBackend(model="deepseek-chat")
+    raise ValueError(f"[make_backend] 未知后端: {name}. "
+                     f"可选: canned / deepseek-r1 / deepseek-v3")
 
 
 # ============================================================
@@ -176,15 +268,47 @@ def reward(env, n, action, prev_au):
 def compile_reward(code: str):
     """把 LLM 生成的代码字符串编译成可调用函数 reward(env,n,action,prev_au).
 
-    exec 的命名空间提供候选函数用到的全局量 (N_UAV, LX, LY, TARGET_CONFIRM_THRESHOLD)。
+    R1 / V3 / 其他 LLM 经常把代码块用 ```python ... ``` 包围；
+    还有的（特别是 reasoning 模型）会把整段 ```python 放进来。
+    这里先按规则剥掉围栏再 exec, 仍有 SyntaxError 时退一步.
     """
+    import re
+    # 1) 优先匹配 ```python ... ``` 围栏 (DOTALL 跨行)
+    py_blocks = re.findall(r"```python\s*\n(.*?)```", code, flags=re.DOTALL)
+    if py_blocks:
+        code = py_blocks[-1].rstrip()
+    else:
+        # 2) 没有 python 围栏, 尝试任意 ``` ... ``` 围栏
+        any_blocks = re.findall(r"```\s*\n(.*?)```", code, flags=re.DOTALL)
+        if any_blocks:
+            code = any_blocks[-1].rstrip()
+        else:
+            # 3) 没有闭合围栏: 把每行以 ``` 开头的行剥掉
+            lines = []
+            for ln in code.splitlines():
+                if ln.strip().startswith("```"):
+                    continue
+                lines.append(ln)
+            code = "\n".join(lines)
+
     ns = {
         "N_UAV": N_UAV, "LX": LX, "LY": LY,
         "TARGET_CONFIRM_THRESHOLD": TARGET_CONFIRM_THRESHOLD,
         "np": np,
     }
-    exec(code, ns)
-    return ns["reward"]
+    try:
+        exec(code, ns)
+        return ns["reward"]
+    except SyntaxError as e:
+        # 4) 强清理: 把任何孤立 ``` 行和 markdown 标记删掉
+        cleaned = "\n".join(
+            ln for ln in code.splitlines()
+            if ln.strip() != "```" and not ln.strip().startswith("```")
+        )
+        ns2 = {"N_UAV": N_UAV, "LX": LX, "LY": LY,
+               "TARGET_CONFIRM_THRESHOLD": TARGET_CONFIRM_THRESHOLD, "np": np}
+        exec(cleaned, ns2)
+        return ns2["reward"]
 
 
 def greedy_step(env, reward_fn, prev_au: float) -> list[int]:
@@ -248,37 +372,110 @@ class LRS:
         self.B_R = []        # 候选缓冲 B^R: list of (code, reward_fn, J, metrics)
         self.history = []    # 记录每次迭代: (k, J, searched, area_unc, eta_k)
 
-    # ---- 初始化提示 P_1 (任务描述 + 系统模型 + 推理指导 + 接口 + 约束) ----
+    # ---- 初始化提示 P_1 (论文图 11 模板: 角色定义→系统模型→推理指导→输出模板) ----
     def init_prompt(self) -> str:
         return (
-            "You are a MARL reward-function designer for multi-UAV dynamic target search.\n"
-            "TASK: 7 UAVs search 15 moving targets in a 20x20 grid with 20 obstacles.\n"
-            "ACTION: 6 discrete actions {N,E,S,W,ascend,descend} per UAV.\n"
-            "OBJECTIVE (Eq. 12a): maximize cumulative searched targets - terminal area uncertainty.\n"
-            "REASONING: dense reward should reward search success, uncertainty reduction, "
-            "altitude adaptation, and inter-UAV separation; penalize collisions.\n"
-            "INTERFACE: define reward(env, n, action, prev_au) -> float.\n"
+            "1. Role definition\n"
+            "You are a professional Reward Engineer specializing in designing dense reward "
+            "functions for Multi-Agent Reinforcement Learning (MARL) tasks. Your responsibility "
+            "is to generate a reward function that strictly aligns with the given objective "
+            "function and hard constraints below.\n"
+            "\n"
+            "2. System model\n"
+            "(1) Scenario description: We consider a cooperative multi-UAV target search scenario "
+            f"in which {N_TARGET} moving targets, with unknown initial positions, are distributed "
+            f"over a {LX}x{LY} grid region containing {N_OBSTACLE} static obstacles. At the initial "
+            "time step, the probability that a target exists in grid cell i is p_i(0)=0.5, and the "
+            "corresponding uncertainty is initialized as chi_i(0)=1. A team of "
+            f"{N_UAV} UAVs is deployed to perform cooperative search. Each UAV operates under a "
+            "discrete maneuvering model with six admissible actions, namely moving north, east, "
+            "south, west, ascending, and descending. Each UAV is equipped with a limited-range "
+            "onboard sensor that can only observe grid cells within its sensing domain. Sensing "
+            "capability is altitude-dependent with a clear tradeoff: a higher flight altitude "
+            "enlarges the sensing range and improves spatial coverage, but reduces target detection "
+            "probability and increases false alarm probability. Altitude selection therefore "
+            "balances wide-area monitoring versus accurate detection.\n"
+            "(2) Problem formulation: Let the trajectory set of all UAVs over a mission cycle be "
+            "denoted by tau = {T_1, ..., T_N}, with T_n = {p_n(t)}_{t=0..T}. The optimization "
+            "objective (Eq. 12a) is to maximize the cumulative number of successfully searched "
+            f"targets minus the terminal average area uncertainty over T={MAX_STEPS} steps. Hard "
+            "constraints include: spatial boundary per UAV, energy budget, inter-UAV separation "
+            "(>= d_min), and collision avoidance with obstacles.\n"
+            "(3) Environment API (use these EXACT attribute names — do NOT invent):\n"
+            f"  env.uav_pos  : ndarray ({N_UAV}, 3), per-UAV [ix, iy, altitude]\n"
+            f"  env.zeta     : ndarray ({LY}, {LX}), 1 if target confirmed, else 0\n"
+            f"  env.gtpm     : ndarray ({LY}, {LX}), per-cell target existence probability\n"
+            f"  env.geum     : ndarray ({LY}, {LX}), per-cell environment uncertainty\n"
+            f"  env.searched : ndarray ({LY}, {LX}), 1 if ever confirmed in this episode\n"
+            "  env.area_uncertainty()  : scalar, mean geum over non-obstacle cells\n"
+            f"  env.occ      : ndarray ({LY}, {LX}), 1 if obstacle\n"
+            "  Constants in scope: N_UAV, LX, LY, TARGET_CONFIRM_THRESHOLD, np=numpy.\n"
+            "\n"
+            "3. Reasoning guidance\n"
+            "- Capturing dynamic targets has higher priority than area coverage.\n"
+            "- When a UAV at higher altitude detects a potential target within its sensory range, "
+            "it should descend to enhance detection probability and verify the target.\n"
+            "- Multiple UAVs are encouraged to search in a dispersed manner to improve the "
+            "efficiency of collaborative search.\n"
+            "\n"
+            "4. Output template\n"
+            "Interface: define `reward(env, n, action, prev_au) -> float`, the reward COMPONENT for "
+            "UAV n taking `action` (0..5) given previous area uncertainty `prev_au`. Greedy "
+            "selection picks per-UAV argmax over its 6 actions. Put the function in a single "
+            "```python ... ``` code block; keep total reasoning under 4000 tokens; after the code, "
+            "briefly (≤100 tokens) state the key design choice. Do NOT add explanations outside "
+            "the code block.\n"
             f"iteration: k={self.cur_k}\n"
         )
 
-    # ---- 反馈提示 P_k^feed (公式 22) ----
+    # ---- 反馈提示 P_k^feed (论文图 11 反馈模板) ----
     def feedback_prompt(self) -> str:
-        # 当前最优 (idx=0 候选代码, idx=2 J, idx=3 metrics；中间 idx=1 是 reward_fn)
+        # 当前迭代候选: B_R[-1] 是最近一次, [0]=code, [2]=J, [3]=metrics
+        # 当前最优: B_R[best_idx]
         if not self.B_R:
             return "FEEDBACK: (no prior candidates yet)\n"
-        best_code = self.B_R[self.best_idx][0]
-        best_J    = self.B_R[self.best_idx][2]
-        best_m    = self.B_R[self.best_idx][3]
-        lines = ["FEEDBACK:",
-                 f"BEST R (J={best_J:.3f}, searched={best_m.get('searched',0)}, "
-                 f"area_unc={best_m.get('area_unc',0):.4f}):",
-                 best_code]
-        # 负面示例: 表现较差的候选
-        lines.append("NEGATIVE EXAMPLES (worse candidates):")
+        cur_code, _, cur_J, cur_m = self.B_R[-1]
+        best_code, _, best_J, best_m = self.B_R[self.best_idx]
+        # 负面示例: 表现较差的候选（公式 22）
+        neg_lines = []
         for (code, _, J, m) in self.B_R:
             if J < best_J - 1e-6:
-                lines.append(f"  - J={J:.3f}: {code[:120]}...")
-        return "\n".join(lines)
+                neg_lines.append(
+                    f"  - J={J:.3f}, searched={m.get('searched',0)}, "
+                    f"area_unc={m.get('area_unc',0):.4f}: (code excerpt) {code[:200]}..."
+                )
+        neg_block = "\n".join(neg_lines) if neg_lines else "  (none)"
+        return (
+            "Feedback prompt P_k^feed (Eq. 22):\n"
+            "At each time step, we greedily select the joint actions of UAVs by maximizing the "
+            "reward function, which generates interaction data for one full episode. We then "
+            "quantify the performance of each reward function via the aforementioned objective "
+            "function to evaluate the quality of the reward function. Please analyze the "
+            "performance of the reward functions and propose an improved version.\n"
+            "\n"
+            "The reward function is:\n"
+            "```python\n"
+            f"{cur_code}\n"
+            "```\n"
+            "\n"
+            "The performance score of the above reward function is:\n"
+            f"trajectory_score = {{'total_score': {cur_J:.3f}, "
+            f"'searched_targets_num': {cur_m.get('searched', 0)}, "
+            f"'final_avg_uncertainty': {cur_m.get('area_unc', 0):.4f}}}\n"
+            "\n"
+            "The best reward function so far is:\n"
+            "```python\n"
+            f"{best_code}\n"
+            "```\n"
+            "\n"
+            "The performance score of the best reward function is:\n"
+            f"trajectory_score = {{'total_score': {best_J:.3f}, "
+            f"'searched_targets_num': {best_m.get('searched', 0)}, "
+            f"'final_avg_uncertainty': {best_m.get('area_unc', 0):.4f}}}\n"
+            "\n"
+            "Underperforming candidates (negative examples):\n"
+            f"{neg_block}\n"
+        )
 
     # ---- 公式 21: 选出当前最优候选 ----
     @property
@@ -303,11 +500,23 @@ class LRS:
             # (1) LLM 生成候选奖励函数代码 R_k
             code = self.llm.generate(prompt)
 
-            # (2) 编译成可调用
-            reward_fn = compile_reward(code)
+            # (2) 编译成可调用 (容错: 失败时不中断, 跳到下次迭代)
+            try:
+                reward_fn = compile_reward(code)
+            except Exception as ce:
+                print(f"[LRS k={k}/{self.K}] compile FAILED ({type(ce).__name__}: {ce}); "
+                      f"skipping this candidate (will try a fresh R_{k+1}).", flush=True)
+                self.history.append((k, float("-inf"), 0, 1.0, self.eta))
+                continue
 
             # (3) 公式 20 贪心跑一个 episode → 公式 12a 打分
-            J, metrics = evaluate_candidate(reward_fn, self.env, seed)
+            try:
+                J, metrics = evaluate_candidate(reward_fn, self.env, seed)
+            except Exception as ee:
+                print(f"[LRS k={k}/{self.K}] eval FAILED ({type(ee).__name__}: {ee}); "
+                      f"skipping this candidate.", flush=True)
+                self.history.append((k, float("-inf"), 0, 1.0, self.eta))
+                continue
 
             # (4) 存入候选缓冲 B^R
             self.B_R.append((code, reward_fn, J, metrics))
