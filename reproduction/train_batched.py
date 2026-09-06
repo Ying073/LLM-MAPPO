@@ -11,6 +11,7 @@ train_batched.py —— 用 BatchedMultiAgentWrapper 训练 (M8 接力 TODO #4 �
     python reproduction/train_batched.py --batch-envs 16 --total-episodes 30 --device cuda --save-history batched_m2_smoke.npz
 """
 import argparse
+import importlib.util
 import os
 import sys
 import time
@@ -30,6 +31,38 @@ from reproduction.env.env_wrapper import MultiAgentWrapper
 from reproduction.algorithms.mappo import MAPPO
 from reproduction.algorithms.buffer import RolloutBuffer
 from reproduction.env.search_env import N_UAV, MAX_STEPS
+from reproduction import lrs as _lrs   # [M12] 用于 --lrs-cache 注入 LX/LY/N_UAV globals
+
+
+def load_lrs_cache(cache_path: str):
+    """[M12] 加载 LRS 离线产出的 R^best.py 文件, 跳过 8 次重复跑 LRS K=5.
+
+    `lrs.compile_reward()` 用 exec(code, ns) 注入 N_UAV/LX/LY/TARGET_CONFIRM_THRESHOLD/np
+    (见 lrs.py:294-298). 我们 importlib 时同样要把这些注入到 module.globals,
+    这样顶层 `def reward(env, n, action, prev_au): ...` body 里的 LX/LY 等 free
+    variable 才能在调用时找到.
+
+    Returns:
+        callable: reward(env, n, action, prev_au) -> float
+    """
+    abs_path = os.path.abspath(cache_path)
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"[lrs-cache] not found: {abs_path}")
+    spec = importlib.util.spec_from_file_location("rbest_cache", abs_path)
+    mod = importlib.util.module_from_spec(spec)
+    # 模仿 lrs.compile_reward() 的 ns:
+    mod.__dict__.update({
+        "N_UAV": _lrs.N_UAV,
+        "LX": _lrs.LX,
+        "LY": _lrs.LY,
+        "TARGET_CONFIRM_THRESHOLD": _lrs.TARGET_CONFIRM_THRESHOLD,
+        "np": _lrs.np,
+    })
+    spec.loader.exec_module(mod)
+    if not hasattr(mod, "reward"):
+        raise RuntimeError(f"[lrs-cache] {abs_path} does not expose `reward(env,n,action,prev_au)`")
+    print(f"[lrs-cache] loaded reward() from {abs_path}")
+    return mod.reward
 
 
 def parse_args():
@@ -48,6 +81,9 @@ def parse_args():
     p.add_argument("--lrs-seed", type=int, default=None)
     p.add_argument("--llm-backend", type=str, default="canned",
                    choices=["canned", "deepseek-r1", "deepseek-v3"])
+    p.add_argument("--lrs-cache", type=str, default=None,
+                   help="[M12] 跳过 LRS K=5, 直接加载一个 R^best.py 文件作为奖励."
+                        " (8 seed 训练共用一份 R^best, 复制论文 §V 协议)")
     p.add_argument("--out-name", type=str, default="training_curve_batched.png")
     p.add_argument("--save-history", type=str, default=None)
     p.add_argument("--minibatch-size", type=int, default=256)
@@ -80,6 +116,8 @@ def train(args):
     lrs_reward_fn = None
     if args.use_lrs:
         lrs_reward_fn = run_lrs(args)
+    elif args.lrs_cache:                                                  # [M12]
+        lrs_reward_fn = load_lrs_cache(args.lrs_cache)
 
     # 判断模式
     n_envs = max(1, args.batch_envs)

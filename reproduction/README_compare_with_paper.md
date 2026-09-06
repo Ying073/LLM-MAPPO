@@ -327,4 +327,56 @@ DEEPSEEK_API_KEY="sk-..." python reproduction/train_batched.py \
 > **R1 真设计的 R^best** 让 MAPPO 把 area_uncertainty 推到 0 (搜完所有目标), 体现 LLM 推理带来的奖励质量提升。
 > 论文 §V 的 71.4% 数字受训练规模（30k vs 150 ep）限制**未在本次复现中验证**; 按本项目已建立的 batched env + 真 R1 接口可在 RTX 4090D 上用 ¥71 + 5h 跑完 30k ep × 8 seed。"
 
-这段把"做到了什么 (真 LLM + 8 seed + 机制对) / 还差什么 (规模 200×) / 为什么差 (训练量) / 怎么补 (上云 ¥71)"一次性说清, 答辩不会翻车。
+这段把"做到了什么 (真 LLM + 8 seed + 机制对) / 还差什么 (规模 200×) / 为什么差 (训练量) / 怎么补 (上云)"一次性说清, 答辩不会翻车。
+
+> ⚠️ **修正**：(M11 收尾) 这里曾写 "¥71 + 5h 跑完 30k ep × 8 seed" —— 这是**错的**。
+> 后来实测外推：单 seed 28k ep（1750 outer × ~8.7s）≈ 4.2h，**8 seed ≈ 34h，¥64–68**（不是 5h）。
+
+---
+
+## 十三、M12 云端脚本（B 方案：8 seed × 3000 ep）
+
+**决定**：用户拍板 **B**——8 个独立训练 seed × 3000 ep，共用 M11 的 R^best 缓存，**不重跑 LRS**、
+**不烧 DeepSeek API**。因为 M11 已证明真 R1 后端可行（R^best J=+8.150），M12 是把"单 seed 150 ep
+冒烟"升级成"8 seed 规模化趋势"，用于填充报告里"seed 数 + 多 ep 收敛"这一块。
+
+### 论文 vs M12（B 方案）差距表
+
+| 维度 | 论文 | M12（B） | 差距 |
+|---|---|---|---|
+| 单 seed ep | 28 000 | 3 000 | **9.3×** ⚠️ |
+| seed 数 | 8 | 8 | 持平 ✅ |
+| LLM 后端 | DeepSeek-R1-7B（推理指导） | DeepSeek-R1（真） | 持平 ✅ |
+| LRS 调用 | 5 次离线 | **0 次（复用 M11 R^best 缓存）** | — |
+| headline 数字 | 71.4% / 100% | **不可报**（ep 仍差 9.3×） | ⚠️ |
+
+### 新增文件（M12）
+
+| 文件 | 作用 |
+|---|---|
+| `cloud/cloud_run.sh` | 一键跑 8 seed × 3000 ep × batch_envs=16，共用 R^best 缓存 |
+| `cloud/CLOUD_RUN.md` | 云端完整上手：租卡、装依赖、上传、跑、下载、诚实边界 |
+| `reproduction/plot_8seed.py` | 8 seed mean±std vs Canned 出图 |
+| `reproduction/train_batched.py` | 新增 `--lrs-cache <R^best.py>` 选项（跳过快失败/慢运行的 LRS） |
+
+### 为什么用 `--lrs-cache` 而不是每 seed 跑一次 LRS
+
+手写重现论文协议：「LLM 离线生成**一次** R^best，**8 个训练 seed 各自训一遍**，报 mean±std」。
+如果每 seed 单独跑一次 `--use-lrs --llm-backend deepseek-r1`，会触发 8 × (5 次 R1 调用 × ~30-60s thinking)
+≈ **多烧 3h + 8 份 API 费**，而且 8 个 seed 会得到 8 个不同的 R^best —— **这不是论文协议**
+（论文是 8 个 seed 在**同一个** R^best 下收敛对比）。所以 M12 用缓存文件统一注入。
+
+### 运营成本（B 方案）
+
+- 单 seed 3000 ep ÷ 16 env ≈ 188 outer × ~8.7s（4090D 实测外推）≈ 27 min
+- 8 seed ≈ **3.6h GPU × ¥1.88/h ≈ ¥7**
+- **不烧 LLM API 费**（用 M11 缓存）
+
+详细操作见 `cloud/CLOUD_RUN.md`。
+
+### M12 后诚实边界（写报告）
+
+- **B 跑不出 71.4% / 100%**。它们是 28k ep + "全部目标找不到" 困难场景的结果。
+- 3000 ep 只能看**趋势**：R^best 是否收敛、8 seed 方差、vs Canned 的相对关系。
+- 若真要论文级：把 `EPS_PER_SEED` 提到 28 000 + 困难场景 → 那是 8 × 1750 outer ≈ 80h GPU（¥150+），另行评估。
+
