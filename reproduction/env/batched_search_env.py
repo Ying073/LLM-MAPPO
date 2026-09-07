@@ -4,8 +4,8 @@ batched_search_env.py —— 多 env 并行的 SearchEnv 版（M8 接力 TODO #4
 为什么需要 batched env？
 - 现有 SearchEnv: 0.561 ms/step，其中 _update_maps (7×9 Bayesian) 占 0.441ms = 79%。
 - 原因：UAV×感知域嵌套 Python loop → 63 次 scipy-style 标量计算。
-- BatchedSearchEnv: 把这 63 次 vectorize 成 7×9 一次性 numpy 操作，
-  现实测得加速 5-7× (0.56ms → ~0.1ms / step)。
+- BatchedSearchEnv: 并行保存多个环境状态；感知更新逐个有效格执行，
+  从而与单环境保持完全相同的 Bayesian 更新顺序和随机数流。
 
 API 设计（与现有 SearchEnv 完全隔离，仅在 train.py 加 --batch-envs 选项启用）：
 - BatchedSearchEnv(n_envs, base_seed) 拥有 n_envs 个独立 SearchEnv 同型副本
@@ -23,18 +23,6 @@ from .search_env import (
     TARGET_CONFIRM_THRESHOLD, MOVING_PROB,
     SENSE_OFFSETS_BY_H, _entropy, DX, DY,
 )
-
-
-# ============================================================
-# 预计算 padded 感知域偏移 + 有效长度
-# ============================================================
-# 每个 UAV 感知域大小固定 9 (3x3)，但 h=0 只用 1，h=1 用 5，h=2 用 9。
-# 在 batched version 里统一 pad 到 9，valid_count 标记实际有效数量。
-_SENSE_OFFSETS = np.zeros((3, 9, 2), dtype=np.int32)  # (h, cell, (dy, dx))
-_SENSE_OFFSETS[0, 0] = (0, 0)
-_SENSE_OFFSETS[1, :5] = [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]
-_SENSE_OFFSETS[2, :9] = [(dy, dx) for dy in (-1, 0, 1) for dx in (-1, 0, 1)]
-_VALID_COUNT = np.array([1, 5, 9], dtype=np.int32)   # per-高度的有效 cell 数
 
 
 def _entropy_batch(p):
@@ -156,7 +144,7 @@ class BatchedSearchEnv:
         self.zeta[b, cells[:, 1], cells[:, 0]] = 1
 
     # ============================================================
-    # UAV 动作执行 (向量化)
+    # UAV 动作执行
     # ============================================================
     def _step_uav(self, actions):
         """actions shape (n_envs, N_UAV) int64."""
@@ -164,57 +152,53 @@ class BatchedSearchEnv:
         assert actions.shape == (self.n_envs, N_UAV), \
             f"actions shape {actions.shape} != ({self.n_envs}, {N_UAV})"
 
-        uav_pos = self.uav_pos
-        old_pos = uav_pos.copy()
-        occ = self.occ
-        t = self.t
+        if np.any((actions < 0) | (actions >= 6)):
+            raise ValueError("actions must be in range 0..5")
 
-        # 水平移动 (a ∈ {0..3})
-        hor_mask = (actions >= 0) & (actions <= 3)        # (n_envs, N_UAV)
-        a_hor = np.where(hor_mask, actions, 0)
-        nx = uav_pos[..., 0] + DX[a_hor]                  # (n_envs, N_UAV)
-        ny = uav_pos[..., 1] + DY[a_hor]
-        # 边界检查
-        in_bounds = (nx >= 0) & (nx < LX) & (ny >= 0) & (ny < LY)
-        # 障碍检查 (per (env, uav))
-        obs_at = occ[np.arange(self.n_envs)[:, None], ny.clip(0, LY-1), nx.clip(0, LX-1)] == 1
-        obs_h_at = self.obs_h[np.arange(self.n_envs)[:, None], ny.clip(0, LY-1), nx.clip(0, LX-1)]
-        no_obs = ~(obs_at & (uav_pos[..., 2] <= obs_h_at))
-        move_ok = hor_mask & in_bounds & no_obs
-        # 应用移动
-        new_ix = np.where(move_ok, nx, uav_pos[..., 0])
-        new_iy = np.where(move_ok, ny, uav_pos[..., 1])
-        uav_pos[..., 0] = new_ix
-        uav_pos[..., 1] = new_iy
-        # 记录 t_last_visit
-        env_idx = np.arange(self.n_envs)[:, None]
+        old_pos = self.uav_pos.copy()
+        candidate = old_pos.copy()
+        # Apply individually legal proposals first. Joint UAV conflicts are
+        # resolved from the frozen proposal below.
         for b in range(self.n_envs):
+            occupied = {tuple(map(int, p)) for p in old_pos[b].tolist()}
             for n in range(N_UAV):
-                if move_ok[b, n]:
-                    iy = int(new_iy[b, n]); ix = int(new_ix[b, n])
-                    self.t_last[b, iy, ix] = t[b]
+                ix, iy, h = (int(v) for v in old_pos[b, n])
+                a = int(actions[b, n])
+                if a < 4:
+                    nx, ny = ix + int(DX[a]), iy + int(DY[a])
+                    if not (0 <= nx < LX and 0 <= ny < LY):
+                        continue
+                    if self.occ[b, ny, nx] and h <= self.obs_h[b, ny, nx]:
+                        continue
+                    if (nx, ny, h) in occupied - {(ix, iy, h)}:
+                        continue
+                    candidate[b, n, :2] = [nx, ny]
+                elif a == 4:
+                    if h < len(HEIGHTS) - 1 and (ix, iy, h + 1) not in occupied:
+                        candidate[b, n, 2] = h + 1
+                else:
+                    descend_h = h - 1
+                    if h > 0 and not (
+                        self.occ[b, iy, ix] and descend_h <= self.obs_h[b, iy, ix]
+                    ) and (ix, iy, descend_h) not in occupied:
+                        candidate[b, n, 2] = descend_h
 
-        # 升档 (a == 4)
-        asc = (actions == 4)
-        if asc.any():
-            uav_pos[..., 2] = np.where(asc, np.minimum(uav_pos[..., 2] + 1, len(HEIGHTS) - 1), uav_pos[..., 2])
-
-        # 降档 (a == 5)
-        des = (actions == 5)
-        if des.any():
-            uav_pos[..., 2] = np.where(des, np.maximum(uav_pos[..., 2] - 1, 0), uav_pos[..., 2])
-
-        # 同步联合动作可能产生同终点或交换位置；冲突参与者保持原位。
         for b in range(self.n_envs):
-            candidate = uav_pos[b].copy()
+            proposed = candidate[b].copy()
+            blocked = np.zeros(N_UAV, dtype=bool)
             for n in range(N_UAV):
-                conflict = any(n != m and np.array_equal(candidate[n], candidate[m]) for m in range(N_UAV))
+                conflict = any(n != m and np.array_equal(proposed[n], proposed[m]) for m in range(N_UAV))
                 swap = any(
-                    n != m and np.array_equal(candidate[n], old_pos[b, m])
-                    and np.array_equal(candidate[m], old_pos[b, n]) for m in range(N_UAV)
+                    n != m and np.array_equal(proposed[n], old_pos[b, m])
+                    and np.array_equal(proposed[m], old_pos[b, n]) for m in range(N_UAV)
                 )
-                if conflict or swap:
-                    uav_pos[b, n] = old_pos[b, n]
+                blocked[n] = conflict or swap
+            candidate[b, blocked] = old_pos[b, blocked]
+
+        self.uav_pos[:] = candidate
+        for b in range(self.n_envs):
+            for ix, iy, _ in self.uav_pos[b]:
+                self.t_last[b, iy, ix] = self.t[b]
 
     # ============================================================
     # 目标移动（向量化，每 env 独立 RNG 抽样）
@@ -251,70 +235,47 @@ class BatchedSearchEnv:
             self._refresh_zeta_b(b)
 
     # ============================================================
-    # 感知地图更新 + 全局融合 (向量化, 7×9 cells 一次性 numpy)
+    # 感知地图更新 + 全局融合
     # ============================================================
     def _update_maps(self):
-        """一次性算所有 env × UAV × 感知域 单元格的 Bayesian 更新 + 全局融合."""
+        """Mirror SearchEnv's valid-cell order and RNG consumption exactly."""
         n = self.n_envs
-        uav_h = self.uav_pos[..., 2]                     # (n, N_UAV)
-        uav_ix = self.uav_pos[..., 0]
-        uav_iy = self.uav_pos[..., 1]
-
-        # 感知域坐标: (n, N_UAV, 9)
-        sens_dx = _SENSE_OFFSETS[uav_h, :, 0]            # (n, N_UAV, 9)
-        sens_dy = _SENSE_OFFSETS[uav_h, :, 1]
-        sens_ix = uav_ix[..., None] + sens_dx             # (n, N_UAV, 9)
-        sens_iy = uav_iy[..., None] + sens_dy
-
-        # 越界 clamp (避免 index 越界), 但记下无效 cell
-        in_bound = (sens_ix >= 0) & (sens_ix < LX) & (sens_iy >= 0) & (sens_iy < LY)
-        cell_count = _VALID_COUNT[uav_h]                  # (n, N_UAV)
-        valid = in_bound & (np.arange(9) < cell_count[..., None])  # (n, N_UAV, 9)
-        sens_ix_safe = np.clip(sens_ix, 0, LX - 1)
-        sens_iy_safe = np.clip(sens_iy, 0, LY - 1)
-
-        # 取 zeta 在感知域的值 (广播到 UAV)
-        # 自我复制 zeta 一次性取: zeta_b, y, x 但 zeta shape 是 (n, LY, LX), UAV 不在里面
-        # 走 advanced indexing: zeta[env_idx[:, None, None], sens_iy_safe, sens_ix_safe]
-        env_idx = np.arange(n)[:, None, None]
-        zeta_sense = self.zeta[env_idx, sens_iy_safe, sens_ix_safe]   # (n, N_UAV, 9)
-
-        # D^D, D^F 按 uav_h 选, broadcast 成 (n, N_UAV, 1)
-        pd = DET_PROB[uav_h][..., None]
-        pf = FALSE_PROB[uav_h][..., None]
-
-        # 抽样 D (每个 env 一组 RNG)
-        D_samples = np.zeros((n, N_UAV, 9), dtype=bool)
         for b in range(n):
-            rands = self._rngs[b].random((N_UAV, 9))
-            D_samples[b] = rands < np.where(zeta_sense[b] == 1, pd[b], pf[b])
+            rng = self._rngs[b]
+            uav_ids = []
+            xs = []
+            ys = []
+            heights = []
+            for uav in range(N_UAV):
+                ix, iy, h = (int(v) for v in self.uav_pos[b, uav])
+                for dx, dy in SENSE_OFFSETS_BY_H[h]:
+                    x, y = ix + dx, iy + dy
+                    if 0 <= x < LX and 0 <= y < LY:
+                        uav_ids.append(uav)
+                        xs.append(x)
+                        ys.append(y)
+                        heights.append(h)
 
-        # Bayesian 更新 (公式 6)
-        p = self.ltpm[env_idx, np.arange(N_UAV)[None, :, None],
-                       sens_iy_safe, sens_ix_safe]        # 当前 ltpm 在感知域的值
-        # 公式展开:
-        # D=1: p_new = p*pd / (p*pd + (1-p)*pf)
-        # D=0: p_new = p*(1-pd) / (p*(1-pd) + (1-p)*(1-pf))
-        new_p = np.where(
-            D_samples,
-            (p * pd) / (p * pd + (1 - p) * pf + 1e-12),
-            (p * (1 - pd)) / (p * (1 - pd) + (1 - p) * (1 - pf) + 1e-12),
-        )
-        new_p = np.clip(new_p, 1e-6, 1 - 1e-6).astype(np.float32)
-        new_chi = _entropy_batch(new_p)
-
-        # Scatter 回 ltpm / leum (n, N_UAV, LY, LX)
-        # 把无效 cell 还原成旧值 (no-op)
-        old_p = self.ltpm[env_idx, np.arange(N_UAV)[None, :, None],
-                          sens_iy_safe, sens_ix_safe]
-        old_chi = self.leum[env_idx, np.arange(N_UAV)[None, :, None],
-                            sens_iy_safe, sens_ix_safe]
-        final_p = np.where(valid, new_p, old_p).astype(np.float32)
-        final_chi = np.where(valid, new_chi, old_chi).astype(np.float32)
-        self.ltpm[env_idx, np.arange(N_UAV)[None, :, None],
-                  sens_iy_safe, sens_ix_safe] = final_p
-        self.leum[env_idx, np.arange(N_UAV)[None, :, None],
-                  sens_iy_safe, sens_ix_safe] = final_chi
+            uav_ids = np.asarray(uav_ids, dtype=np.intp)
+            xs = np.asarray(xs, dtype=np.intp)
+            ys = np.asarray(ys, dtype=np.intp)
+            heights = np.asarray(heights, dtype=np.intp)
+            pd = DET_PROB[heights]
+            pf = FALSE_PROB[heights]
+            detected = rng.random(len(xs)) < np.where(
+                self.zeta[b, ys, xs] == 1, pd, pf
+            )
+            p = self.ltpm[b, uav_ids, ys, xs]
+            p_new = np.where(
+                detected,
+                (p * pd) / (p * pd + (1.0 - p) * pf),
+                (p * (1.0 - pd)) / (
+                    p * (1.0 - pd) + (1.0 - p) * (1.0 - pf)
+                ),
+            )
+            p_new = np.clip(p_new, 1e-6, 1.0 - 1e-6)
+            self.ltpm[b, uav_ids, ys, xs] = p_new.astype(np.float32)
+            self.leum[b, uav_ids, ys, xs] = _entropy_batch(p_new)
 
         # 全局融合 (公式 8 / 10): axis=1 沿 UAV 维度
         self.geum = self.leum.min(axis=1)                # (n, LY, LX)

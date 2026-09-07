@@ -113,7 +113,7 @@ class SearchEnv:
         gtpm    : (LY, LX)   float         全局目标概率
         geum    : (LY, LX)   float         全局不确定度
         t_last_visit : (LY, LX) int        每个网格"上次被访问"的时间步
-        searched : (LY, LX) int            该网格是否曾被确认存在目标
+        searched : (LY, LX) int            该时间步该网格是否确认存在目标
 
     device 参数 (M6): 仅作为记录, 不影响行为; 实际计算都在 CPU numpy.
     GPU 加速留给 PPO update (mappo.py).
@@ -350,14 +350,18 @@ class SearchEnv:
                 candidate[n, 2] += 1
             else:
                 candidate[n, 2] -= 1
+        # Conflict checks must use one immutable joint proposal. Mutating candidate
+        # while scanning would let the later participant enter a contested cell.
+        proposed = candidate.copy()
+        blocked = np.zeros(N_UAV, dtype=bool)
         for n in range(N_UAV):
-            conflict = any(n != m and np.array_equal(candidate[n], candidate[m]) for m in range(N_UAV))
+            conflict = any(n != m and np.array_equal(proposed[n], proposed[m]) for m in range(N_UAV))
             swap = any(
-                n != m and np.array_equal(candidate[n], self.uav_pos[m])
-                and np.array_equal(candidate[m], self.uav_pos[n]) for m in range(N_UAV)
+                n != m and np.array_equal(proposed[n], self.uav_pos[m])
+                and np.array_equal(proposed[m], self.uav_pos[n]) for m in range(N_UAV)
             )
-            if conflict or swap:
-                candidate[n] = self.uav_pos[n]
+            blocked[n] = conflict or swap
+        candidate[blocked] = self.uav_pos[blocked]
         self.uav_pos = candidate
         for ix, iy, _ in self.uav_pos:
             self.t_last_visit[iy, ix] = self.t

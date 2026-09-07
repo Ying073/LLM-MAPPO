@@ -101,6 +101,7 @@ class MultiAgentWrapper:
         # transition 的前态必须在 step 前保存；Eq. (34) 的 Delta U 与 Critic
         # 的 O(t) 都依赖这个时间对齐。
         prev_geum = self.env.geum.copy()
+        prev_uav_pos = self.env.uav_pos.copy()
 
         # (1) 推进基础 env，得到全局信息
         _, _, done, env_info = self.env.step(actions.tolist())
@@ -122,7 +123,11 @@ class MultiAgentWrapper:
         reward_components = None
         if self.use_paper_reward:
             from ..reward.paper_reward import compute_paper_rbest
-            shared_reward, reward_components = compute_paper_rbest(prev_geum, self.env, actions)
+            effective_actions = actions.copy()
+            effective_actions[np.all(self.env.uav_pos == prev_uav_pos, axis=1)] = -1
+            shared_reward, reward_components = compute_paper_rbest(
+                prev_geum, self.env, effective_actions
+            )
             per_agent_reward = np.full(N_UAV, shared_reward, dtype=np.float32)
         elif self.lrs_reward_fn is not None:
             # M5 路径: R^best (R_best) 主项 + 安全/能耗惩罚

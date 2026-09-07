@@ -407,7 +407,7 @@ class LRS:
             f"  env.zeta     : ndarray ({LY}, {LX}), 1 if target confirmed, else 0\n"
             f"  env.gtpm     : ndarray ({LY}, {LX}), per-cell target existence probability\n"
             f"  env.geum     : ndarray ({LY}, {LX}), per-cell environment uncertainty\n"
-            f"  env.searched : ndarray ({LY}, {LX}), 1 if ever confirmed in this episode\n"
+            f"  env.searched : ndarray ({LY}, {LX}), 1 if confirmed at the current step\n"
             "  env.area_uncertainty()  : scalar, mean geum over non-obstacle cells\n"
             f"  env.occ      : ndarray ({LY}, {LX}), 1 if obstacle\n"
             "  Constants in scope: N_UAV, LX, LY, TARGET_CONFIRM_THRESHOLD, np=numpy.\n"

@@ -96,6 +96,138 @@ class SearchEnvironmentPaperAlignmentTests(unittest.TestCase):
 
         self.assertFalse(bool(masks[0, 0, 5]))  # descend enters obstacle volume
 
+    def test_batched_step_cannot_descend_into_obstacle_even_if_called_directly(self):
+        env = BatchedSearchEnv(n_envs=1, base_seed=12)
+        env.occ.fill(0)
+        env.obs_h.fill(0)
+        env.uav_pos[0, 0] = [5, 5, 2]
+        env.occ[0, 5, 5] = 1
+        env.obs_h[0, 5, 5] = 1
+        actions = np.zeros((1, N_UAV), dtype=np.int64)
+        actions[0, 0] = 5
+
+        env._step_uav(actions)
+
+        np.testing.assert_array_equal(env.uav_pos[0, 0], [5, 5, 2])
+
+    def test_single_and_batched_joint_conflicts_leave_all_participants_in_place(self):
+        single = SearchEnv(seed=14)
+        batched = BatchedSearchEnv(n_envs=1, base_seed=14)
+        positions = np.asarray([
+            [0, 1, 1], [2, 1, 1], [5, 5, 1], [7, 7, 1],
+            [9, 9, 1], [11, 11, 1], [13, 13, 1],
+        ], dtype=np.int32)
+        single.occ.fill(0)
+        batched.occ.fill(0)
+        single.uav_pos[:] = positions
+        batched.uav_pos[0] = positions
+        actions = np.asarray([1, 3, 4, 4, 4, 4, 4], dtype=np.int64)
+
+        single.step(actions)
+        batched.step(actions[None])
+
+        np.testing.assert_array_equal(single.uav_pos[:2], positions[:2])
+        np.testing.assert_array_equal(batched.uav_pos[0, :2], positions[:2])
+        np.testing.assert_array_equal(batched.uav_pos[0], single.uav_pos)
+
+    def test_batched_step_rejects_entry_into_a_cell_occupied_at_action_time(self):
+        single = SearchEnv(seed=141)
+        batched = BatchedSearchEnv(n_envs=1, base_seed=141)
+        positions = np.asarray([
+            [0, 1, 1], [1, 1, 1], [5, 5, 1], [7, 7, 1],
+            [9, 9, 1], [11, 11, 1], [13, 13, 1],
+        ], dtype=np.int32)
+        single.occ.fill(0)
+        batched.occ.fill(0)
+        single.uav_pos[:] = positions
+        batched.uav_pos[0] = positions
+        # UAV 0 tries to enter UAV 1's current cell while UAV 1 moves east.
+        actions = np.asarray([1, 1, 4, 4, 4, 4, 4], dtype=np.int64)
+
+        single._step_targets = lambda: None
+        batched._step_targets = lambda: None
+        single._update_maps = lambda: None
+        batched._update_maps = lambda: None
+        single.step(actions)
+        batched.step(actions[None])
+
+        np.testing.assert_array_equal(batched.uav_pos[0], single.uav_pos)
+
+    def test_batched_visit_timestamps_match_single_for_vertical_and_stationary_actions(self):
+        single = SearchEnv(seed=15)
+        batched = BatchedSearchEnv(n_envs=1, base_seed=15)
+        single.t = 10
+        batched.t[0] = 10
+        single.t_last_visit.fill(0)
+        batched.t_last.fill(0)
+        positions = single.uav_pos.copy()
+        batched.uav_pos[0] = positions
+        actions = np.full(N_UAV, 4, dtype=np.int64)
+
+        single._step_targets = lambda: None
+        batched._step_targets = lambda: None
+        single._update_maps = lambda: None
+        batched._update_maps = lambda: None
+        single.step(actions)
+        batched.step(actions[None])
+
+        np.testing.assert_array_equal(batched.t_last[0], single.t_last_visit)
+
+    def test_batched_belief_update_matches_single_environment_and_rng_stream(self):
+        single = SearchEnv(seed=16)
+        batched = BatchedSearchEnv(n_envs=1, base_seed=16)
+        np.testing.assert_array_equal(batched.uav_pos[0], single.uav_pos)
+        np.testing.assert_array_equal(batched.zeta[0], single.zeta)
+
+        single._update_maps()
+        batched._update_maps()
+
+        np.testing.assert_array_equal(batched.ltpm[0], single.ltpm)
+        np.testing.assert_array_equal(batched.leum[0], single.leum)
+        np.testing.assert_array_equal(batched.gtpm[0], single.gtpm)
+        np.testing.assert_array_equal(batched.geum[0], single.geum)
+        self.assertEqual(batched._rngs[0].random(), single.rng.random())
+
+    def test_single_and_one_env_batch_remain_exactly_equal_over_multiple_steps(self):
+        single = SearchEnv(seed=18)
+        batched = BatchedSearchEnv(n_envs=1, base_seed=18)
+        action_rng = np.random.default_rng(1818)
+        for _ in range(20):
+            masks = single.get_action_masks()
+            actions = np.asarray([
+                action_rng.choice(np.flatnonzero(masks[n])) for n in range(N_UAV)
+            ], dtype=np.int64)
+            single.step(actions)
+            batched.step(actions[None])
+            for single_value, batch_value in [
+                (single.uav_pos, batched.uav_pos[0]),
+                (single.zeta, batched.zeta[0]),
+                (single.ltpm, batched.ltpm[0]),
+                (single.leum, batched.leum[0]),
+                (single.gtpm, batched.gtpm[0]),
+                (single.geum, batched.geum[0]),
+                (single.t_last_visit, batched.t_last[0]),
+            ]:
+                np.testing.assert_array_equal(batch_value, single_value)
+
+    def test_batched_belief_update_draws_once_per_environment(self):
+        class CountingRng:
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.random_calls = 0
+
+            def random(self, *args, **kwargs):
+                self.random_calls += 1
+                return self.delegate.random(*args, **kwargs)
+
+        env = BatchedSearchEnv(n_envs=3, base_seed=20)
+        counters = [CountingRng(rng) for rng in env._rngs]
+        env._rngs = counters
+
+        env._update_maps()
+
+        self.assertEqual([rng.random_calls for rng in counters], [1, 1, 1])
+
     def test_observation_contains_all_uav_positions(self):
         wrapper = MultiAgentWrapper(seed=13, use_dpes=False)
         obs = wrapper.reset()[0]
@@ -116,6 +248,43 @@ class SearchEnvironmentPaperAlignmentTests(unittest.TestCase):
         expected, _ = compute_paper_rbest(prev_geum, wrapper.env, actions)
         self.assertAlmostEqual(shared, expected, places=5)
         np.testing.assert_allclose(info["per_agent_reward"], np.full(N_UAV, expected))
+
+    def test_paper_reward_ignores_vertical_actions_rejected_by_joint_collision(self):
+        wrapper = MultiAgentWrapper(seed=30, use_dpes=False, use_paper_reward=True)
+        wrapper.reset()
+        wrapper.env.occ.fill(0)
+        wrapper.env.uav_pos[:] = np.asarray([
+            [5, 5, 0], [5, 5, 2], [2, 2, 1], [4, 4, 1],
+            [8, 8, 1], [10, 10, 1], [12, 12, 1],
+        ], dtype=np.int32)
+        actions = np.asarray([4, 5, 0, 0, 0, 0, 0], dtype=np.int64)
+
+        with patch("reproduction.reward.paper_reward.compute_paper_rbest",
+                   return_value=(0.0, {})) as reward_fn:
+            wrapper.step(actions)
+
+        reward_actions = reward_fn.call_args.args[2]
+        np.testing.assert_array_equal(reward_actions[:2], [-1, -1])
+
+    def test_batched_paper_reward_ignores_rejected_vertical_actions(self):
+        from reproduction.env.batched_env_wrapper import BatchedMultiAgentWrapper
+
+        wrapper = BatchedMultiAgentWrapper(n_envs=1, base_seed=32, use_dpes=False,
+                                           use_paper_reward=True)
+        wrapper.reset()
+        wrapper.env.occ.fill(0)
+        wrapper.env.uav_pos[0] = np.asarray([
+            [5, 5, 0], [5, 5, 2], [2, 2, 1], [4, 4, 1],
+            [8, 8, 1], [10, 10, 1], [12, 12, 1],
+        ], dtype=np.int32)
+        actions = np.asarray([[4, 5, 0, 0, 0, 0, 0]], dtype=np.int64)
+
+        with patch("reproduction.reward.paper_reward.compute_paper_rbest",
+                   return_value=(0.0, {})) as reward_fn:
+            wrapper.step(actions)
+
+        reward_actions = reward_fn.call_args.args[2]
+        np.testing.assert_array_equal(reward_actions[:2], [-1, -1])
 
     def test_batched_wrapper_exposes_paper_observation_and_masks(self):
         from reproduction.env.batched_env_wrapper import BatchedMultiAgentWrapper
@@ -458,9 +627,31 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
 
         self.assertIn('--policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"', script)
         self.assertIn('reproduction/select_checkpoint.py', script)
-        self.assertIn('--seeds 100 101 102 103', script)
-        self.assertIn('--seeds 0 1 2 3 4 5 6 7', script)
+        self.assertIn('--seeds 100 101 102 103 104 105 106 107', script)
+        self.assertIn('--seeds 200 201 202 203 204 205 206 207', script)
         self.assertIn('--checkpoint "${SELECTED_POLICY}"', script)
+
+    def test_cloud_manifest_fingerprints_all_training_and_evaluation_code(self):
+        script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
+            encoding="utf-8"
+        )
+        for path in [
+            "reproduction/env/batched_search_env.py",
+            "reproduction/algorithms/batched_dpes.py",
+            "reproduction/algorithms/buffer.py",
+            "reproduction/algorithms/networks.py",
+            "reproduction/evaluate.py",
+        ]:
+            self.assertIn(path, script)
+        self.assertIn('MANIFEST_NAME="run_manifest_resume_', script)
+
+    def test_resume_manifest_records_checkpoint_path_and_pretraining_hash(self):
+        script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('RESUME_SOURCE="$(realpath "${RESUME_FROM}")"', script)
+        self.assertIn('echo "resume_from=${RESUME_SOURCE:-none}"', script)
+        self.assertIn('sha256sum "${RESUME_SOURCE}"', script)
 
     def test_evaluation_is_learning_free_and_reports_paper_metrics(self):
         from reproduction.evaluate import evaluate_seed

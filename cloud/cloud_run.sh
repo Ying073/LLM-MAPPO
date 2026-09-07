@@ -34,12 +34,16 @@ fi
 STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="${RUN_DIR:-reproduction/paper_aligned_runs/${RUN_KIND}_seed${TRAIN_SEED}_${STAMP}}"
 TEE_OPTION=""
+RESUME_SOURCE=""
 if [[ -n "${RESUME_FROM}" ]]; then
   [[ -f "${RESUME_FROM}" ]] || { echo "Resume checkpoint not found: ${RESUME_FROM}" >&2; exit 1; }
+  RESUME_SOURCE="$(realpath "${RESUME_FROM}")"
   mkdir -p "${RUN_DIR}"
   TEE_OPTION="-a"
+  MANIFEST_NAME="run_manifest_resume_${STAMP}.txt"
 else
   mkdir "${RUN_DIR}"
+  MANIFEST_NAME="run_manifest.txt"
 fi
 
 echo "Paper-aligned ${RUN_KIND} run"
@@ -55,10 +59,17 @@ echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
   echo "batch_envs=${BATCH_ENVS}"
   echo "train_seed=${TRAIN_SEED}"
   echo "device=${DEVICE}"
-  sha256sum reproduction/train_batched.py reproduction/algorithms/mappo.py \
-    reproduction/env/search_env.py reproduction/env/batched_env_wrapper.py \
-    reproduction/reward/paper_reward.py reproduction/select_checkpoint.py cloud/cloud_run.sh
-} > "${RUN_DIR}/run_manifest.txt"
+  echo "resume_from=${RESUME_SOURCE:-none}"
+  if [[ -n "${RESUME_SOURCE}" ]]; then
+    sha256sum "${RESUME_SOURCE}"
+  fi
+  sha256sum reproduction/train_batched.py reproduction/evaluate.py reproduction/select_checkpoint.py \
+    reproduction/algorithms/mappo.py reproduction/algorithms/networks.py \
+    reproduction/algorithms/buffer.py reproduction/algorithms/dpes.py \
+    reproduction/algorithms/batched_dpes.py reproduction/env/search_env.py \
+    reproduction/env/batched_search_env.py reproduction/env/env_wrapper.py \
+    reproduction/env/batched_env_wrapper.py reproduction/reward/paper_reward.py cloud/cloud_run.sh
+} > "${RUN_DIR}/${MANIFEST_NAME}"
 
 "${PY}" - <<'PY'
 import torch
@@ -83,7 +94,7 @@ TRAIN_ARGS=(
   --log-every 10
 )
 if [[ -n "${RESUME_FROM}" ]]; then
-  TRAIN_ARGS+=(--resume-from "${RESUME_FROM}")
+  TRAIN_ARGS+=(--resume-from "${RESUME_SOURCE}")
 fi
 
 "${PY}" reproduction/train_batched.py \
@@ -93,7 +104,7 @@ fi
 # Reproduction-only model selection: validation seeds are disjoint from final test seeds.
 "${PY}" reproduction/select_checkpoint.py \
   --checkpoints "${RUN_DIR}"/policy_checkpoints/policy_outer_*.pt \
-  --seeds 100 101 102 103 \
+  --seeds 100 101 102 103 104 105 106 107 \
   --device "${DEVICE}" \
   --max-steps 500 \
   --out "${RUN_DIR}/checkpoint_selection.json" \
@@ -104,7 +115,7 @@ SELECTED_POLICY="$("${PY}" -c 'import json,sys; print(json.load(open(sys.argv[1]
 # Paper §V-A: freeze the validation-selected policy, then test on eight independent seeds.
 "${PY}" reproduction/evaluate.py \
   --checkpoint "${SELECTED_POLICY}" \
-  --seeds 0 1 2 3 4 5 6 7 \
+  --seeds 200 201 202 203 204 205 206 207 \
   --device "${DEVICE}" \
   --max-steps 500 \
   --out "${RUN_DIR}/evaluation_8seeds.json" \

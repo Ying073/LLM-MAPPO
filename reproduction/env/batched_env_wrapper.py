@@ -86,6 +86,7 @@ class BatchedMultiAgentWrapper:
             f"actions shape {actions.shape} != ({self.n_envs}, {N_UAV})"
 
         prev_geum = self.env.geum.copy()
+        prev_uav_pos = self.env.uav_pos.copy()
         # (1) 推进底层 BatchedSearchEnv
         env_obs, env_shared_rew, done, infos = self.env.step(actions)
         self._t += 1
@@ -112,7 +113,11 @@ class BatchedMultiAgentWrapper:
         for b in range(self.n_envs):
             if self.use_paper_reward:
                 from ..reward.paper_reward import compute_paper_rbest
-                shared_b, components = compute_paper_rbest(prev_geum[b], self.env_for_b(b), actions[b])
+                effective_actions = actions[b].copy()
+                effective_actions[np.all(self.env.uav_pos[b] == prev_uav_pos[b], axis=1)] = -1
+                shared_b, components = compute_paper_rbest(
+                    prev_geum[b], self.env_for_b(b), effective_actions
+                )
                 per_b = np.full(N_UAV, shared_b, dtype=np.float32)
                 infos[b]["paper_reward_components"] = components
             elif self.lrs_reward_fn is not None:
