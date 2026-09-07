@@ -342,6 +342,7 @@ class MAPPONetworkPaperAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(algo.gamma, 0.95)
         self.assertAlmostEqual(algo.actor_opts[0].param_groups[0]["lr"], 0.0002)
         self.assertAlmostEqual(algo.critic_opt.param_groups[0]["lr"], 0.0002)
+        self.assertEqual(algo.entropy_coef, 0.0)
 
     def test_mappo_update_accepts_masked_multi_actor_rollout(self):
         algo = MAPPO(obs_dim=8, global_dim=56, n_agents=N_UAV, device="cpu",
@@ -620,16 +621,15 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
 
         self.assertEqual(selected["checkpoint"], "safe-best.pt")
 
-    def test_cloud_run_selects_snapshot_on_seeds_disjoint_from_final_test(self):
+    def test_cloud_run_evaluates_the_final_policy_after_full_training(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
             encoding="utf-8"
         )
 
         self.assertIn('--policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"', script)
-        self.assertIn('reproduction/select_checkpoint.py', script)
-        self.assertIn('--seeds 100 101 102 103 104 105 106 107', script)
         self.assertIn('--seeds 200 201 202 203 204 205 206 207', script)
-        self.assertIn('--checkpoint "${SELECTED_POLICY}"', script)
+        self.assertIn('--checkpoint "${RUN_DIR}/policy.pt"', script)
+        self.assertNotIn('reproduction/select_checkpoint.py \\', script)
 
     def test_cloud_manifest_fingerprints_all_training_and_evaluation_code(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
@@ -668,6 +668,46 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
         self.assertIn("target_search_time", metrics)
         self.assertIn("terminal_area_uncertainty", metrics)
         self.assertTrue(all(torch.equal(a, b) for a, b in zip(before, after)))
+
+    def test_evaluation_samples_from_the_learned_policy_as_algorithm_3_specifies(self):
+        from reproduction.evaluate import evaluate_seed
+
+        env = MultiAgentWrapper(seed=48, use_dpes=True, use_paper_reward=True)
+        obs_dim = env.reset()[0].shape[0]
+        algo = MAPPO(obs_dim=obs_dim, global_dim=obs_dim * N_UAV,
+                     n_agents=N_UAV, device="cpu")
+
+        with patch.object(algo, "select_actions", wraps=algo.select_actions) as select:
+            evaluate_seed(algo, seed=48, max_steps=1, use_dpes=True)
+
+        self.assertFalse(select.call_args.kwargs["deterministic"])
+
+    def test_stochastic_evaluation_is_reproducible_for_each_independent_seed(self):
+        from reproduction.evaluate import evaluate_seed
+
+        env = MultiAgentWrapper(seed=49, use_dpes=True, use_paper_reward=True)
+        obs_dim = env.reset()[0].shape[0]
+        algo = MAPPO(obs_dim=obs_dim, global_dim=obs_dim * N_UAV,
+                     n_agents=N_UAV, device="cpu")
+        traces = []
+        original_select = algo.select_actions
+
+        def run_once():
+            trace = []
+
+            def record_actions(*args, **kwargs):
+                actions, logp = original_select(*args, **kwargs)
+                trace.append(actions.copy())
+                return actions, logp
+
+            with patch.object(algo, "select_actions", side_effect=record_actions):
+                evaluate_seed(algo, seed=49, max_steps=4, use_dpes=True)
+            traces.append(np.stack(trace))
+
+        run_once()
+        run_once()
+
+        np.testing.assert_array_equal(traces[0], traces[1])
 
 
 if __name__ == "__main__":

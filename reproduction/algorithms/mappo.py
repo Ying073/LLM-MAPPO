@@ -39,6 +39,7 @@ class MAPPO:
         critic_lr: float = 2e-4,
         update_epochs: int = 4,
         minibatch_size: int = 64,
+        entropy_coef: float = 0.0,
         device: str = "cpu",
     ):
         self.device = torch.device(device)
@@ -58,6 +59,7 @@ class MAPPO:
         self.lam = gae_lambda
         self.update_epochs = update_epochs
         self.minibatch_size = minibatch_size
+        self.entropy_coef = entropy_coef
 
     # ---------------------------------------------------------------
     # 选动作 (部署 / 收集时用)
@@ -188,9 +190,13 @@ class MAPPO:
                     surr1 = ratio * adv_t
                     surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv_t
                     actor_loss = -torch.min(surr1, surr2).mean()
-                    entropy = dist.entropy().mean()
                     opt.zero_grad()
-                    (actor_loss - 0.01 * entropy).backward()
+                    if self.entropy_coef:
+                        entropy = dist.entropy().mean()
+                        actor_objective = actor_loss - self.entropy_coef * entropy
+                    else:
+                        actor_objective = actor_loss
+                    actor_objective.backward()
                     opt.step()
                     actor_losses.append(float(actor_loss.item()))
 
@@ -208,6 +214,7 @@ class MAPPO:
                 "gae_lambda": self.lam,
                 "update_epochs": self.update_epochs,
                 "minibatch_size": self.minibatch_size,
+                "entropy_coef": self.entropy_coef,
             },
             "actors": [actor.state_dict() for actor in self.actors],
             "critic": self.critic.state_dict(),

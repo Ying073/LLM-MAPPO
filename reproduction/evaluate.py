@@ -1,4 +1,4 @@
-"""论文 §V-A 的独立测试阶段：固定策略，在 8 个随机种子上评估。"""
+"""论文 §V-A 的独立测试阶段：冻结参数并按策略采样，在 8 个随机种子上评估。"""
 
 import argparse
 import json
@@ -6,6 +6,7 @@ import os
 import sys
 
 import numpy as np
+import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(HERE)
@@ -18,7 +19,10 @@ from reproduction.env.search_env import MAX_STEPS, N_TARGET
 
 
 def evaluate_seed(algo: MAPPO, seed: int, max_steps: int = MAX_STEPS,
-                  use_dpes: bool = True) -> dict:
+                  use_dpes: bool = True, deterministic: bool = False) -> dict:
+    # The environment owns a seed-local NumPy generator; seed PyTorch as well
+    # so policy sampling is reproducible for each independent test run.
+    torch.manual_seed(seed)
     env = MultiAgentWrapper(seed=seed, use_dpes=use_dpes, use_paper_reward=True)
     obs = env.reset()
     for actor in algo.actors:
@@ -29,7 +33,7 @@ def evaluate_seed(algo: MAPPO, seed: int, max_steps: int = MAX_STEPS,
     info = None
     for _ in range(max_steps):
         masks = env.get_action_masks()
-        actions, _ = algo.select_actions(obs, masks, deterministic=True)
+        actions, _ = algo.select_actions(obs, masks, deterministic=deterministic)
         obs, _, done, info = env.step(actions)
         cumulative_searched += int(info["searched_count"])
         positions = [tuple(map(int, p)) for p in env.env.uav_pos]
@@ -71,12 +75,22 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS)
     parser.add_argument("--no-dpes", action="store_true")
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="诊断用 argmax 动作；论文 Algorithm 3 默认从策略分布采样",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
     algo = MAPPO.from_checkpoint(args.checkpoint, device=args.device)
-    results = [evaluate_seed(algo, seed, args.max_steps, not args.no_dpes) for seed in args.seeds]
-    payload = {"protocol": "paper-test-8-independent-seeds", "runs": results,
+    results = [
+        evaluate_seed(algo, seed, args.max_steps, not args.no_dpes, args.deterministic)
+        for seed in args.seeds
+    ]
+    payload = {"protocol": "paper-test-8-independent-seeds",
+               "action_selection": "argmax" if args.deterministic else "policy-sample",
+               "runs": results,
                "summary": summarize(results)}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as handle:

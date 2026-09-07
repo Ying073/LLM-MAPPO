@@ -19,7 +19,9 @@
 | DPES | Eq. (13)–(17)，表 II 参数 | 已修正括号、边界邻居数、局部 DP patch 与非扩散 G_lu |
 | 奖励 | Appendix Eq. (34) | 默认 `paper-rbest`，基于同一 transition 计算团队奖励；`Rdis` 按论文“惩罚间距不足”的文字含义逐机对截断为非负值 |
 | 训练 transition | `O(t), a(t), r(t), O(t+1)` | Critic 保存动作前全局状态，不再错配 post-step state |
-| 测试 | 固定模型，8 个独立随机 seed | `evaluate.py` 禁止更新参数并报告论文指标 |
+| 测试 | Algorithm 3 以 `a_n(t) ~ pi_theta_n` 采样动作；固定模型，8 个独立随机 seed | `evaluate.py` 冻结参数、默认策略采样并同时固定环境与 PyTorch 随机流；`--deterministic` 仅供 argmax 诊断 |
+| Actor 目标 Eq. (23) | 仅 PPO clipped surrogate objective | 默认 `entropy_coef=0`，不再额外加入论文未报告的 entropy bonus |
+| 正式模型 | 训练达到 28,000 episodes 后输出 optimal Actor/Critic；未描述中途验证选模 | 正式脚本直接测试最终 `policy.pt`；周期快照仅用于断点恢复和诊断 |
 
 ## 论文实验参数
 
@@ -32,7 +34,7 @@
 
 ## 尚不能声称完全复现的部分
 
-1. 新版尚未完成 28,000-episode 正式训练，因此不能比较论文的 100% 成功率或 71.4% 搜索时间缩短。
+1. 已完成的 28,000-episode 结果是在旧的额外 entropy bonus 下训练，且曾用确定性 argmax 与中途 checkpoint 选择评测，不能作为最终论文对齐数字；可先按修正后的采样协议复测最终 checkpoint，再决定是否重训。
 2. 论文未给出 Eq. (34) 中 `chi_th`、高空条件概率和安全距离的全部数值。当前默认值分别为 0.3、0.8 和 1 个网格，是公开、可改的复现假设。论文公式中的 `Rdis` 未写出截断，但正文将其描述为间距不足惩罚；直接使用原式会让远距离产生巨额正奖励，因此实现采用 `max(0, d_safe - distance + 1)`，报告中必须注明这是依据文字语义作出的纠错性解释。
 3. 论文同时给出 100 m 网格、1 s 步长、10 m/s UAV 速度和相邻格动作，这些量存在尺度张力。当前轨迹仍使用离散相邻格动作，能耗按论文 10 m/s 推进模型计算。由 Eq. (1) 得到约 126.03 W，完整 500 秒 episode 约耗 63.0 kJ，超过表 I 的 60 kJ 初始能量；论文目标与公开奖励未说明耗尽终止/返航约束，当前仅记录并将归一化剩余能量截断到零，不擅自增加终止规则。
 4. DPES 公式使用 `p_{n,i}`，而算法流程先融合 GTPM。当前解释为：用融合 GTPM 更新公共信息素场，再给每架 UAV 截取其感知域 DP；报告中应注明这一解释。

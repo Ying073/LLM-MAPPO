@@ -63,7 +63,7 @@ echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
   if [[ -n "${RESUME_SOURCE}" ]]; then
     sha256sum "${RESUME_SOURCE}"
   fi
-  sha256sum reproduction/train_batched.py reproduction/evaluate.py reproduction/select_checkpoint.py \
+  sha256sum reproduction/train_batched.py reproduction/evaluate.py \
     reproduction/algorithms/mappo.py reproduction/algorithms/networks.py \
     reproduction/algorithms/buffer.py reproduction/algorithms/dpes.py \
     reproduction/algorithms/batched_dpes.py reproduction/env/search_env.py \
@@ -101,20 +101,11 @@ fi
   "${TRAIN_ARGS[@]}" \
   2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/training.log"
 
-# Reproduction-only model selection: validation seeds are disjoint from final test seeds.
-"${PY}" reproduction/select_checkpoint.py \
-  --checkpoints "${RUN_DIR}"/policy_checkpoints/policy_outer_*.pt \
-  --seeds 100 101 102 103 104 105 106 107 \
-  --device "${DEVICE}" \
-  --max-steps 500 \
-  --out "${RUN_DIR}/checkpoint_selection.json" \
-  2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/checkpoint_selection.log"
-
-SELECTED_POLICY="$("${PY}" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["selected_checkpoint"])' "${RUN_DIR}/checkpoint_selection.json")"
-
-# Paper §V-A: freeze the validation-selected policy, then test on eight independent seeds.
+# Paper Algorithm 3 / §V-A: after all episodes, freeze and test the final
+# stochastic policy on eight independent seeds. The paper does not specify
+# validation-based selection of an intermediate checkpoint.
 "${PY}" reproduction/evaluate.py \
-  --checkpoint "${SELECTED_POLICY}" \
+  --checkpoint "${RUN_DIR}/policy.pt" \
   --seeds 200 201 202 203 204 205 206 207 \
   --device "${DEVICE}" \
   --max-steps 500 \
