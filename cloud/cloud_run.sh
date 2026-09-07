@@ -17,13 +17,19 @@ RESUME_FROM="${RESUME_FROM:-}"
 CODE_VERSION="${CODE_VERSION:-unknown}"
 
 case "${RUN_KIND}" in
-  pilot)  TRAIN_EPISODES="${TRAIN_EPISODES:-3000}" ;;
-  formal) TRAIN_EPISODES="${TRAIN_EPISODES:-28000}" ;;
+  pilot)  EVAL_SEEDS_DEFAULT="300 301 302 303 304 305 306 307"; TRAIN_EPISODES="${TRAIN_EPISODES:-3000}" ;;
+  formal) EVAL_SEEDS_DEFAULT="400 401 402 403 404 405 406 407"; TRAIN_EPISODES="${TRAIN_EPISODES:-28000}" ;;
   *) echo "RUN_KIND must be pilot or formal" >&2; exit 2 ;;
 esac
+EVAL_SEEDS="${EVAL_SEEDS:-${EVAL_SEEDS_DEFAULT}}"
+read -r -a EVAL_SEED_ARRAY <<< "${EVAL_SEEDS}"
 
 if (( TRAIN_EPISODES % BATCH_ENVS != 0 )); then
   echo "TRAIN_EPISODES must be divisible by BATCH_ENVS for an exact episode count." >&2
+  exit 2
+fi
+if (( ${#EVAL_SEED_ARRAY[@]} != 8 )); then
+  echo "EVAL_SEEDS must contain exactly 8 integer seeds." >&2
   exit 2
 fi
 if [[ ! -x "${PY}" ]]; then
@@ -49,6 +55,7 @@ fi
 echo "Paper-aligned ${RUN_KIND} run"
 echo "project=${PROJECT_ROOT}"
 echo "episodes=${TRAIN_EPISODES}, batch_envs=${BATCH_ENVS}, train_seed=${TRAIN_SEED}"
+echo "evaluation_seeds=${EVAL_SEEDS}"
 echo "artifacts=${RUN_DIR}"
 echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
 
@@ -58,6 +65,7 @@ echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
   echo "episodes=${TRAIN_EPISODES}"
   echo "batch_envs=${BATCH_ENVS}"
   echo "train_seed=${TRAIN_SEED}"
+  echo "evaluation_seeds=${EVAL_SEEDS}"
   echo "device=${DEVICE}"
   echo "resume_from=${RESUME_SOURCE:-none}"
   if [[ -n "${RESUME_SOURCE}" ]]; then
@@ -106,7 +114,7 @@ fi
 # validation-based selection of an intermediate checkpoint.
 "${PY}" reproduction/evaluate.py \
   --checkpoint "${RUN_DIR}/policy.pt" \
-  --seeds 200 201 202 203 204 205 206 207 \
+  --seeds "${EVAL_SEED_ARRAY[@]}" \
   --device "${DEVICE}" \
   --max-steps 500 \
   --out "${RUN_DIR}/evaluation_8seeds.json" \

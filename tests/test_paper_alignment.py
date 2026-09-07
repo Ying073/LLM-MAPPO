@@ -627,9 +627,20 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
         )
 
         self.assertIn('--policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"', script)
-        self.assertIn('--seeds 200 201 202 203 204 205 206 207', script)
+        self.assertIn('pilot)  EVAL_SEEDS_DEFAULT="300 301 302 303 304 305 306 307"', script)
+        self.assertIn('formal) EVAL_SEEDS_DEFAULT="400 401 402 403 404 405 406 407"', script)
+        self.assertIn('EVAL_SEEDS="${EVAL_SEEDS:-${EVAL_SEEDS_DEFAULT}}"', script)
+        self.assertIn('read -r -a EVAL_SEED_ARRAY <<< "${EVAL_SEEDS}"', script)
+        self.assertIn('--seeds "${EVAL_SEED_ARRAY[@]}"', script)
         self.assertIn('--checkpoint "${RUN_DIR}/policy.pt"', script)
         self.assertNotIn('reproduction/select_checkpoint.py \\', script)
+
+    def test_cloud_manifest_records_the_exact_evaluation_seeds(self):
+        script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('echo "evaluation_seeds=${EVAL_SEEDS}"', script)
 
     def test_cloud_manifest_fingerprints_all_training_and_evaluation_code(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
