@@ -162,7 +162,15 @@ class BatchedMultiAgentWrapper:
                     elif (nx, ny, int(h)) in occupied - {(int(ix), int(iy), int(h))}:
                         masks[b, n, a] = False
                 masks[b, n, 4] = h < len(HEIGHTS) - 1 and (int(ix), int(iy), int(h + 1)) not in occupied
-                masks[b, n, 5] = h > 0 and (int(ix), int(iy), int(h - 1)) not in occupied
+                descend_h = int(h - 1)
+                masks[b, n, 5] = (
+                    h > 0
+                    and not (
+                        self.env.occ[b, int(iy), int(ix)]
+                        and descend_h <= self.env.obs_h[b, int(iy), int(ix)]
+                    )
+                    and (int(ix), int(iy), descend_h) not in occupied
+                )
         return masks
 
     # ============================================================

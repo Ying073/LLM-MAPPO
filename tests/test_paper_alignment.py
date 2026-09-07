@@ -67,6 +67,35 @@ class SearchEnvironmentPaperAlignmentTests(unittest.TestCase):
         masks = wrapper.get_action_masks()
         self.assertFalse(bool(masks[0, 2]))  # south enters obstacle
 
+    def test_action_mask_rejects_descent_into_obstacle(self):
+        wrapper = MultiAgentWrapper(seed=12, use_dpes=False)
+        wrapper.reset()
+        wrapper.env.occ.fill(0)
+        wrapper.env.obs_h.fill(0)
+        wrapper.env.uav_pos[0] = [5, 5, 2]
+        wrapper.env.occ[5, 5] = 1
+        wrapper.env.obs_h[5, 5] = 1
+
+        masks = wrapper.get_action_masks()
+
+        self.assertFalse(bool(masks[0, 5]))  # descend enters obstacle volume
+
+    def test_batched_action_mask_rejects_descent_into_obstacle(self):
+        from reproduction.env.batched_env_wrapper import BatchedMultiAgentWrapper
+
+        wrapper = BatchedMultiAgentWrapper(n_envs=2, base_seed=12, use_dpes=False,
+                                           use_paper_reward=True)
+        wrapper.reset()
+        wrapper.env.occ.fill(0)
+        wrapper.env.obs_h.fill(0)
+        wrapper.env.uav_pos[0, 0] = [5, 5, 2]
+        wrapper.env.occ[0, 5, 5] = 1
+        wrapper.env.obs_h[0, 5, 5] = 1
+
+        masks = wrapper.get_action_masks()
+
+        self.assertFalse(bool(masks[0, 0, 5]))  # descend enters obstacle volume
+
     def test_observation_contains_all_uav_positions(self):
         wrapper = MultiAgentWrapper(seed=13, use_dpes=False)
         obs = wrapper.reset()[0]
@@ -358,6 +387,80 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
 
         self.assertEqual(compute_n_outer(3000, 16), 188)
         self.assertEqual(compute_n_outer(100, 16), 7)
+
+    def test_periodic_checkpoint_keeps_immutable_policy_snapshots(self):
+        from reproduction.train_batched import save_periodic_checkpoint
+
+        algo = MAPPO(obs_dim=8, global_dim=56, n_agents=N_UAV, device="cpu")
+        progress = {"next_outer": 50}
+        with tempfile.TemporaryDirectory() as tmp:
+            training_path = Path(tmp) / "training_state.pt"
+            policy_dir = Path(tmp) / "policy_checkpoints"
+
+            first = save_periodic_checkpoint(
+                algo, training_path, policy_dir, progress, outer_number=50
+            )
+            progress["next_outer"] = 100
+            second = save_periodic_checkpoint(
+                algo, training_path, policy_dir, progress, outer_number=100
+            )
+
+            self.assertTrue(training_path.exists())
+            self.assertEqual(first.name, "policy_outer_000050.pt")
+            self.assertEqual(second.name, "policy_outer_000100.pt")
+            self.assertTrue(first.exists())
+            self.assertTrue(second.exists())
+
+    def test_checkpoint_selection_prioritizes_safety_then_mission_metrics(self):
+        from reproduction.select_checkpoint import select_best_record
+
+        records = [
+            {
+                "checkpoint": "unsafe.pt",
+                "summary": {
+                    "all_collision_free": False,
+                    "found_targets": {"mean": 15.0},
+                    "terminal_area_uncertainty": {"mean": 0.1},
+                    "target_search_time": {"mean": 200.0},
+                    "cumulative_searched": {"mean": 3000.0},
+                },
+            },
+            {
+                "checkpoint": "safe-low-coverage.pt",
+                "summary": {
+                    "all_collision_free": True,
+                    "found_targets": {"mean": 12.0},
+                    "terminal_area_uncertainty": {"mean": 0.2},
+                    "target_search_time": {"mean": 500.0},
+                    "cumulative_searched": {"mean": 2000.0},
+                },
+            },
+            {
+                "checkpoint": "safe-best.pt",
+                "summary": {
+                    "all_collision_free": True,
+                    "found_targets": {"mean": 13.0},
+                    "terminal_area_uncertainty": {"mean": 0.3},
+                    "target_search_time": {"mean": 450.0},
+                    "cumulative_searched": {"mean": 1900.0},
+                },
+            },
+        ]
+
+        selected = select_best_record(records)
+
+        self.assertEqual(selected["checkpoint"], "safe-best.pt")
+
+    def test_cloud_run_selects_snapshot_on_seeds_disjoint_from_final_test(self):
+        script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('--policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"', script)
+        self.assertIn('reproduction/select_checkpoint.py', script)
+        self.assertIn('--seeds 100 101 102 103', script)
+        self.assertIn('--seeds 0 1 2 3 4 5 6 7', script)
+        self.assertIn('--checkpoint "${SELECTED_POLICY}"', script)
 
     def test_evaluation_is_learning_free_and_reports_paper_metrics(self):
         from reproduction.evaluate import evaluate_seed

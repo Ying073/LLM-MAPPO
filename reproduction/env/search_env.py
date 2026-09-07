@@ -234,7 +234,12 @@ class SearchEnv:
                 if (nx, ny, int(h)) in occupied - {(int(ix), int(iy), int(h))}:
                     masks[n, a] = False
             masks[n, 4] = h < len(HEIGHTS) - 1 and (int(ix), int(iy), int(h + 1)) not in occupied
-            masks[n, 5] = h > 0 and (int(ix), int(iy), int(h - 1)) not in occupied
+            descend_h = int(h - 1)
+            masks[n, 5] = (
+                h > 0
+                and not (self.occ[int(iy), int(ix)] and descend_h <= self.obs_h[int(iy), int(ix)])
+                and (int(ix), int(iy), descend_h) not in occupied
+            )
         return masks
 
     # ============================================================

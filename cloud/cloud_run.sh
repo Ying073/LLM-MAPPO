@@ -56,7 +56,8 @@ echo "checkpoint_every=${CHECKPOINT_EVERY}, resume_from=${RESUME_FROM:-none}"
   echo "train_seed=${TRAIN_SEED}"
   echo "device=${DEVICE}"
   sha256sum reproduction/train_batched.py reproduction/algorithms/mappo.py \
-    reproduction/reward/paper_reward.py cloud/cloud_run.sh
+    reproduction/env/search_env.py reproduction/env/batched_env_wrapper.py \
+    reproduction/reward/paper_reward.py reproduction/select_checkpoint.py cloud/cloud_run.sh
 } > "${RUN_DIR}/run_manifest.txt"
 
 "${PY}" - <<'PY'
@@ -77,6 +78,7 @@ TRAIN_ARGS=(
   --save-history "${RUN_DIR}/training_history.npz"
   --checkpoint-out "${RUN_DIR}/policy.pt"
   --training-checkpoint "${RUN_DIR}/training_state.pt"
+  --policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"
   --checkpoint-every "${CHECKPOINT_EVERY}"
   --log-every 10
 )
@@ -88,9 +90,20 @@ fi
   "${TRAIN_ARGS[@]}" \
   2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/training.log"
 
-# Paper §V-A: freeze the learned policy, then test on eight independent seeds.
+# Reproduction-only model selection: validation seeds are disjoint from final test seeds.
+"${PY}" reproduction/select_checkpoint.py \
+  --checkpoints "${RUN_DIR}"/policy_checkpoints/policy_outer_*.pt \
+  --seeds 100 101 102 103 \
+  --device "${DEVICE}" \
+  --max-steps 500 \
+  --out "${RUN_DIR}/checkpoint_selection.json" \
+  2>&1 | tee ${TEE_OPTION} "${RUN_DIR}/checkpoint_selection.log"
+
+SELECTED_POLICY="$("${PY}" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["selected_checkpoint"])' "${RUN_DIR}/checkpoint_selection.json")"
+
+# Paper §V-A: freeze the validation-selected policy, then test on eight independent seeds.
 "${PY}" reproduction/evaluate.py \
-  --checkpoint "${RUN_DIR}/policy.pt" \
+  --checkpoint "${SELECTED_POLICY}" \
   --seeds 0 1 2 3 4 5 6 7 \
   --device "${DEVICE}" \
   --max-steps 500 \

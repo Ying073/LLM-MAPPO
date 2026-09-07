@@ -21,6 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import math
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PARENT = os.path.dirname(HERE)
@@ -56,6 +57,20 @@ def restore_rng_state(state):
     torch.set_rng_state(state["torch"].cpu())
     if "cuda" in state and torch.cuda.is_available():
         torch.cuda.set_rng_state_all([rng_state.cpu() for rng_state in state["cuda"]])
+
+
+def save_periodic_checkpoint(mappo, training_path, policy_dir, progress, *, outer_number):
+    """Save the resumable latest state plus a non-overwritten policy snapshot."""
+    training_path = Path(training_path).resolve()
+    policy_dir = Path(policy_dir).resolve()
+    training_path.parent.mkdir(parents=True, exist_ok=True)
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    policy_path = policy_dir / f"policy_outer_{int(outer_number):06d}.pt"
+    if policy_path.exists():
+        raise FileExistsError(f"policy snapshot already exists: {policy_path}")
+    mappo.save_training_checkpoint(training_path, progress)
+    mappo.save_checkpoint(policy_path)
+    return policy_path
 
 
 def load_lrs_cache(cache_path: str):
@@ -115,6 +130,8 @@ def parse_args():
     p.add_argument("--checkpoint-out", type=str, default=None)
     p.add_argument("--training-checkpoint", type=str, default=None,
                    help="定期覆盖写入的完整训练状态（用于断点续训）")
+    p.add_argument("--policy-checkpoint-dir", type=str, default=None,
+                   help="保留每个周期的冻结策略，供独立验证集选择模型")
     p.add_argument("--checkpoint-every", type=int, default=0,
                    help="每多少个 outer iteration 保存完整训练状态；0 表示关闭")
     p.add_argument("--resume-from", type=str, default=None,
@@ -378,7 +395,17 @@ def train(args):
                 },
                 "rng_state": capture_rng_state(),
             }
-            mappo.save_training_checkpoint(checkpoint_path, progress)
+            if args.policy_checkpoint_dir:
+                policy_path = save_periodic_checkpoint(
+                    mappo,
+                    checkpoint_path,
+                    args.policy_checkpoint_dir,
+                    progress,
+                    outer_number=outer + 1,
+                )
+                print(f"[checkpoint] saved policy snapshot: {policy_path}", flush=True)
+            else:
+                mappo.save_training_checkpoint(checkpoint_path, progress)
             print(f"[checkpoint] saved resumable state at outer {outer + 1}: {checkpoint_path}",
                   flush=True)
 

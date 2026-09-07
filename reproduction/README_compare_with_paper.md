@@ -44,6 +44,8 @@
 - Pilot：3,000 episodes；用于查数值稳定性和趋势，不用于论文最终数字。
 - Formal：28,000 episodes；训练完成后冻结策略，在 seeds 0–7 上测试并报告 mean±std。
 
-正式训练每 50 个 outer iteration 原子保存一次完整训练状态，包括模型、优化器、环境、历史与 NumPy/PyTorch/CUDA 随机数流；可通过 `RESUME_FROM` 和原 `RUN_DIR` 继续，不必从头训练。
+正式训练每 50 个 outer iteration 原子保存一次最新完整训练状态，包括模型、优化器、环境、历史与 NumPy/PyTorch/CUDA 随机数流；同时把该时点的冻结策略保留在 `policy_checkpoints/`，不再只剩最终模型。可通过 `RESUME_FROM` 和原 `RUN_DIR` 继续，不必从头训练。
+
+训练结束后使用验证 seeds 100–103 对阶段策略选模，优先级依次为：全部无碰撞、找到的不同目标数、终局区域不确定度、搜索时间、累计搜索指示。最终 seeds 0–7 只用于一次独立测试。该 checkpoint 选择协议是本复现新增的防过拟合措施，论文没有公开对应细节。
 
 所有新结果写入 `reproduction/paper_aligned_runs/` 的唯一时间戳目录，避免覆盖旧实验。
