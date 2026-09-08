@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Upload source code to the configured AutoDL SSH host.
+# Upload source code to the configured austlab SSH host.
 # Existing files may be replaced, so updating a non-empty target requires ALLOW_UPDATE=1.
 set -euo pipefail
 
-REMOTE="${REMOTE:-autodl}"
-REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/projects/llm-mappo}"
+REMOTE="${REMOTE:-austlab}"
+REMOTE_ROOT="${REMOTE_ROOT:-/home/lihaitao202413767/liuqiying2025313900/llm-mappo}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 

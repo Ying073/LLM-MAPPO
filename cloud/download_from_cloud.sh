@@ -7,8 +7,8 @@ if [[ $# -ne 1 ]]; then
   exit 2
 fi
 
-REMOTE="${REMOTE:-autodl}"
-REMOTE_ROOT="${REMOTE_ROOT:-/root/autodl-tmp/projects/llm-mappo}"
+REMOTE="${REMOTE:-austlab}"
+REMOTE_ROOT="${REMOTE_ROOT:-/home/lihaitao202413767/liuqiying2025313900/llm-mappo}"
 RUN_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"

@@ -127,6 +127,8 @@ def parse_args():
     p.add_argument("--out-name", type=str, default="training_curve_batched.png")
     p.add_argument("--save-history", type=str, default=None)
     p.add_argument("--minibatch-size", type=int, default=256)
+    p.add_argument("--entropy-coef", type=float, default=0.0,
+                   help="PPO entropy bonus coefficient; the paper does not publish this value")
     p.add_argument("--checkpoint-out", type=str, default=None)
     p.add_argument("--training-checkpoint", type=str, default=None,
                    help="定期覆盖写入的完整训练状态（用于断点续训）")
@@ -158,6 +160,9 @@ def run_lrs(args):
 
 
 def train(args):
+    if args.entropy_coef < 0.0:
+        raise ValueError("--entropy-coef must be non-negative")
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -193,7 +198,8 @@ def train(args):
           f"n_envs={n_envs}, N_UAV={N_UAV}, obs_dim={obs_dim}, global_dim={global_dim}, "
           f"act_dim=6, rollout_len={args.rollout_len}, device={args.device}, "
           f"use_dpes={args.use_dpes}, use_lrs={args.use_lrs}, "
-          f"reward_path={'lrs' if lrs_reward_fn is not None else args.reward_source}")
+          f"reward_path={'lrs' if lrs_reward_fn is not None else args.reward_source}, "
+          f"entropy_coef={args.entropy_coef}")
 
     mappo = MAPPO(
         obs_dim=obs_dim,
@@ -202,6 +208,7 @@ def train(args):
         n_agents=N_UAV,
         device=args.device,
         minibatch_size=args.minibatch_size,
+        entropy_coef=args.entropy_coef,
     )
     buffer = RolloutBuffer(
         rollout_len=args.rollout_len,
@@ -231,11 +238,12 @@ def train(args):
             "rollout_len": args.rollout_len,
             "obs_dim": obs_dim,
             "global_dim": global_dim,
+            "entropy_coef": args.entropy_coef,
         }
         mismatches = {
             key: (saved_config.get(key), value)
             for key, value in current_config.items()
-            if saved_config.get(key) != value
+            if saved_config.get(key, 0.0 if key == "entropy_coef" else None) != value
         }
         if mismatches:
             raise ValueError(f"resume configuration mismatch: {mismatches}")
@@ -380,6 +388,7 @@ def train(args):
                     "rollout_len": args.rollout_len,
                     "obs_dim": obs_dim,
                     "global_dim": global_dim,
+                    "entropy_coef": args.entropy_coef,
                 },
                 "env": env,
                 "observations": obs_batch if use_batched else obs_list,

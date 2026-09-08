@@ -624,7 +624,7 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
 
         self.assertEqual(selected["checkpoint"], "safe-best.pt")
 
-    def test_cloud_run_evaluates_the_final_policy_after_full_training(self):
+    def test_cloud_run_selects_a_checkpoint_before_final_evaluation(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
             encoding="utf-8"
         )
@@ -632,11 +632,24 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
         self.assertIn('--policy-checkpoint-dir "${RUN_DIR}/policy_checkpoints"', script)
         self.assertIn('pilot)  EVAL_SEEDS_DEFAULT="300 301 302 303 304 305 306 307"', script)
         self.assertIn('formal) EVAL_SEEDS_DEFAULT="400 401 402 403 404 405 406 407"', script)
+        self.assertIn('VALIDATION_SEEDS="${VALIDATION_SEEDS:-100 101 102 103 104 105 106 107}"', script)
         self.assertIn('EVAL_SEEDS="${EVAL_SEEDS:-${EVAL_SEEDS_DEFAULT}}"', script)
         self.assertIn('read -r -a EVAL_SEED_ARRAY <<< "${EVAL_SEEDS}"', script)
+        self.assertIn('reproduction/select_checkpoint.py', script)
+        self.assertIn('--seeds "${VALIDATION_SEED_ARRAY[@]}"', script)
+        self.assertIn('CHECKPOINT_CANDIDATES+=("${RESUME_SOURCE}")', script)
+        self.assertIn('SELECTION_EVERY must be a positive integer.', script)
         self.assertIn('--seeds "${EVAL_SEED_ARRAY[@]}"', script)
-        self.assertIn('--checkpoint "${RUN_DIR}/policy.pt"', script)
-        self.assertNotIn('reproduction/select_checkpoint.py \\', script)
+        self.assertIn('--checkpoint "${SELECTED_CHECKPOINT}"', script)
+
+    def test_cloud_run_enables_and_records_entropy_regularization(self):
+        script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('ENTROPY_COEF="${ENTROPY_COEF:-0.01}"', script)
+        self.assertIn('--entropy-coef "${ENTROPY_COEF}"', script)
+        self.assertIn('echo "entropy_coef=${ENTROPY_COEF}"', script)
 
     def test_cloud_manifest_records_the_exact_evaluation_seeds(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
@@ -644,6 +657,7 @@ class BatchedTrainingProtocolTests(unittest.TestCase):
         )
 
         self.assertIn('echo "evaluation_seeds=${EVAL_SEEDS}"', script)
+        self.assertIn('echo "validation_seeds=${VALIDATION_SEEDS}"', script)
 
     def test_cloud_manifest_fingerprints_all_training_and_evaluation_code(self):
         script = (Path(__file__).parents[1] / "cloud" / "cloud_run.sh").read_text(
