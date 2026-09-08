@@ -24,6 +24,8 @@ manual_reward.py —— 手写稠密奖励 (替代论文 §IV-C 的 LLM 奖励�
         - 这样策略梯度能直接学到"要让感知域扫到未搜到的格子"
 """
 
+from __future__ import annotations
+
 import numpy as np
 
 from ..env.search_env import (

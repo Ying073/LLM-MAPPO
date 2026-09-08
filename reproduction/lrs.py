@@ -31,6 +31,8 @@ LLM 后端抽象：
     换用真实 DeepSeek-R1-7B 时，只需实现一个子类返回真实生成的代码即可。
 """
 
+from __future__ import annotations
+
 import copy
 import os
 import numpy as np

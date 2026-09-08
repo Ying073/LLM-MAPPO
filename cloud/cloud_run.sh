@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Paper-aligned training + fixed-policy evaluation on AutoDL.
+# Paper-aligned training + fixed-policy evaluation on a remote GPU server.
 # Default is a 3,000-episode pilot. Set RUN_KIND=formal for 28,000 episodes.
 set -euo pipefail
 
@@ -11,7 +11,7 @@ RUN_KIND="${RUN_KIND:-pilot}"
 TRAIN_SEED="${TRAIN_SEED:-0}"
 BATCH_ENVS="${BATCH_ENVS:-20}"
 DEVICE="${DEVICE:-cuda}"
-PY="${PY:-/root/mappo_venv/bin/python}"
+PY="${PY:-${PROJECT_ROOT}/.venv/bin/python}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-50}"
 RESUME_FROM="${RESUME_FROM:-}"
 CODE_VERSION="${CODE_VERSION:-unknown}"

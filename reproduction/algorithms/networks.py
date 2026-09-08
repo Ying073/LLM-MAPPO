@@ -15,6 +15,8 @@ networks.py —— Actor / Critic 网络结构
         Critic : MLP(in=obs_dim*N_UAV, 64, 64, out=1), ReLU 激活, 输出标量价值
 """
 
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 
